@@ -1,0 +1,80 @@
+name: Build Executables for Windows and macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version（e.g: 1.0.0）'
+        required: false
+        default: '1.0.0'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-14] # for windows and macOS(apple silicion)
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'  
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies with uv
+        run: uv sync
+
+      - name: Install PyInstaller and Pillow (for icon conversion)
+        run: uv pip install pyinstaller pillow
+
+      - name: Convert icon for Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          python -c "
+          from PIL import Image
+          icon = Image.open('icon/icon.png')
+          icon.save('icon/icon.ico', format='ICO', sizes=[(256,256), (128,128), (64,64), (48,48), (32,32), (16,16)])
+          "
+
+      - name: Convert icon for macOS
+        if: matrix.os == 'macos-14'
+        run: |
+          mkdir icon/iconset
+          sips -z 16 16     icon/icon.png --out icon/iconset/icon_16x16.png
+          sips -z 32 32     icon/icon.png --out icon/iconset/icon_16x16@2x.png
+          sips -z 32 32     icon/icon.png --out icon/iconset/icon_32x32.png
+          sips -z 64 64     icon/icon.png --out icon/iconset/icon_32x32@2x.png
+          sips -z 128 128   icon/icon.png --out icon/iconset/icon_128x128.png
+          sips -z 256 256   icon/icon.png --out icon/iconset/icon_128x128@2x.png
+          sips -z 256 256   icon/icon.png --out icon/iconset/icon_256x256.png
+          sips -z 512 512   icon/icon.png --out icon/iconset/icon_256x256@2x.png
+          sips -z 512 512   icon/icon.png --out icon/iconset/icon_512x512.png
+          sips -z 1024 1024 icon/icon.png --out icon/iconset/icon_512x512@2x.png
+          iconutil -c icns icon/iconset -o icon/icon.icns
+          rm -rf icon/iconset
+
+      - name: Build executable
+        run: |
+          APP_NAME="MyApp-v${{ inputs.version }}"
+          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+            pyinstaller --onefile --icon=icon/icon.ico --name $APP_NAME main.py
+          else
+            pyinstaller --onefile --icon=icon/icon.icns --name $APP_NAME --windowed main.py
+            if [ -d "dist/$APP_NAME.app" ]; then
+              cp icon/icon.icns "dist/$APP_NAME.app/Contents/Resources/"
+              plutil -replace CFBundleIconFile -string icon.icns "dist/$APP_NAME.app/Contents/Info.plist"
+            fi
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: executable-${{ matrix.os }}-v${{ inputs.version }}
+          path: dist/
