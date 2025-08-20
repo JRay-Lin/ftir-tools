@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version（e.g: 1.0.0）'
+        description: 'Version (e.g: 1.0.0)'
         required: false
         default: '1.0.0'
 
@@ -12,7 +12,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, macos-14] # for windows and macOS(apple silicion)
+        os: [windows-latest, macos-14]
 
     runs-on: ${{ matrix.os }}
 
@@ -23,7 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  
+          python-version: '3.12'
 
       - name: Install uv
         run: pip install uv
@@ -46,19 +46,19 @@ jobs:
       - name: Convert icon for macOS
         if: matrix.os == 'macos-14'
         run: |
-          mkdir icon/iconset
-          sips -z 16 16     icon/icon.png --out icon/iconset/icon_16x16.png
-          sips -z 32 32     icon/icon.png --out icon/iconset/icon_16x16@2x.png
-          sips -z 32 32     icon/icon.png --out icon/iconset/icon_32x32.png
-          sips -z 64 64     icon/icon.png --out icon/iconset/icon_32x32@2x.png
-          sips -z 128 128   icon/icon.png --out icon/iconset/icon_128x128.png
-          sips -z 256 256   icon/icon.png --out icon/iconset/icon_128x128@2x.png
-          sips -z 256 256   icon/icon.png --out icon/iconset/icon_256x256.png
-          sips -z 512 512   icon/icon.png --out icon/iconset/icon_256x256@2x.png
-          sips -z 512 512   icon/icon.png --out icon/iconset/icon_512x512.png
-          sips -z 1024 1024 icon/icon.png --out icon/iconset/icon_512x512@2x.png
-          iconutil -c icns icon/iconset -o icon/icon.icns
-          rm -rf icon/iconset
+          mkdir icon/icon.iconset
+          sips -z 16 16     icon/icon.png --out icon/icon.iconset/icon_16x16.png
+          sips -z 32 32     icon/icon.png --out icon/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     icon/icon.png --out icon/icon.iconset/icon_32x32.png
+          sips -z 64 64     icon/icon.png --out icon/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   icon/icon.png --out icon/icon.iconset/icon_128x128.png
+          sips -z 256 256   icon/icon.png --out icon/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   icon/icon.png --out icon/icon.iconset/icon_256x256.png
+          sips -z 512 512   icon/icon.png --out icon/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   icon/icon.png --out icon/icon.iconset/icon_512x512.png
+          sips -z 1024 1024 icon/icon.png --out icon/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icon/icon.iconset -o icon/icon.icns
+          rm -rf icon/icon.iconset
 
       - name: Build executable
         run: |
