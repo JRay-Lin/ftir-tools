@@ -44,6 +44,18 @@ jobs:
             - name: Install PyInstaller and Pillow (for icon conversion)
               run: uv pip install pyinstaller pillow # If not in pyproject.toml, install additionally
 
+            - name: Set version
+              id: version
+              run: |
+                  if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+                      $version = "${{ inputs.version }}" 
+                      if ([string]::IsNullOrEmpty($version)) { $version = "1.0.0" }
+                  } else {
+                      $version = "1.0.${{ github.run_number }}"
+                  }
+                  echo "version=$version" >> $env:GITHUB_OUTPUT
+              shell: pwsh
+
             - name: Convert icon for Windows
               run: |
                   uv run python -c "
@@ -55,14 +67,13 @@ jobs:
 
             - name: Build executable for Windows
               run: |
-                  $env:VERSION = "${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}"
-                  uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v$env:VERSION" main.py
+                  uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v${{ steps.version.outputs.version }}" main.py
               shell: pwsh
 
             - name: Upload artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: executable-windows-latest-v${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}
+                  name: executable-windows-latest-v${{ steps.version.outputs.version }}
                   path: dist/
 
     build-macos:
@@ -94,6 +105,17 @@ jobs:
             - name: Install PyInstaller and Pillow (for icon conversion)
               run: uv pip install pyinstaller pillow # If not in pyproject.toml, install additionally
 
+            - name: Set version
+              id: version  
+              run: |
+                  if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+                      version="${{ inputs.version }}"
+                      if [ -z "$version" ]; then version="1.0.0"; fi
+                  else
+                      version="1.0.${{ github.run_number }}"
+                  fi
+                  echo "version=$version" >> $GITHUB_OUTPUT
+
             - name: Convert icon for macOS
               run: |
                   mkdir icon/icon.iconset
@@ -113,27 +135,25 @@ jobs:
 
             - name: Build executable for macOS
               run: |
-                  VERSION=${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}
-                  uv run pyinstaller --onefile --icon=icon/icon.icns --name "FTIR Tools-v${VERSION}" --windowed main.py
+                  uv run pyinstaller --onefile --icon=icon/icon.icns --name "FTIR Tools-v${{ steps.version.outputs.version }}" --windowed main.py
                   # If needed for .app bundle, additionally handle Info.plist
-                  if [ -d "dist/FTIR Tools-v${VERSION}.app" ]; then
-                    cp icon/icon.icns "dist/FTIR Tools-v${VERSION}.app/Contents/Resources/"
-                    plutil -replace CFBundleIconFile -string icon.icns "dist/FTIR Tools-v${VERSION}.app/Contents/Info.plist"
+                  if [ -d "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app" ]; then
+                    cp icon/icon.icns "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app/Contents/Resources/"
+                    plutil -replace CFBundleIconFile -string icon.icns "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app/Contents/Info.plist"
                   fi
               shell: bash
 
             - name: Zip macOS .app bundle
               run: |
-                  VERSION=${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}
-                  if [ -d "dist/FTIR Tools-v${VERSION}.app" ]; then
-                    zip -r "dist/FTIR Tools-v${VERSION}.app.zip" "dist/FTIR Tools-v${VERSION}.app"
+                  if [ -d "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app" ]; then
+                    zip -r "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app.zip" "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app"
                   fi
               shell: bash
 
             - name: Upload artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: executable-macos-14-v${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}
+                  name: executable-macos-14-v${{ steps.version.outputs.version }}
                   path: dist/
 
     release:
