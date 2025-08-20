@@ -18,23 +18,9 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QCheckBox,
-    QDialog,
     QFormLayout,
     QLineEdit,
-    QRadioButton,
-    QButtonGroup,
-    QDialogButtonBox,
-    QScrollArea,
-    QFrame,
-    QAbstractItemView,
-    QSplitter,
     QGroupBox,
-    QGridLayout,
-    QSpinBox,
-    QDoubleSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QMenuBar,
     QMenu,
     QTabWidget,
@@ -91,19 +77,19 @@ class BaselineCreationTab(QWidget):
 
         # Load existing baseline parameters as defaults if they exist
         existing_params = self.ylk_data.get("metadata", {}).get("baseline_params", {})
-        
+
         # Ensure lambda is positive and properly formatted
         existing_lambda = existing_params.get("lambda", 1e5)
         if existing_lambda <= 0:
             existing_lambda = 1e5
         default_lambda = f"{existing_lambda:g}"  # Use :g format to handle scientific notation properly
-        
+
         # Ensure p is valid
-        existing_p = existing_params.get("p", 0.01) 
+        existing_p = existing_params.get("p", 0.01)
         if existing_p <= 0 or existing_p >= 1:
             existing_p = 0.01
         default_p = str(existing_p)
-        
+
         default_smooth = existing_params.get("smooth", False)
 
         self.lambda_edit = QLineEdit(default_lambda)
