@@ -1,4 +1,4 @@
-name: Build Executables for Windows and macOS
+name: Build Executables and Create Release for Windows and macOS
 
 on:
   workflow_dispatch:
@@ -8,13 +8,12 @@ on:
         required: false
         default: '1.0.0'
 
-jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-14]  # macos-14 supports Apple Silicon (ARM64)
+permissions:
+  contents: write  # Required for creating GitHub Release and uploading assets
 
-    runs-on: ${{ matrix.os }}
+jobs:
+  build-windows:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
@@ -35,16 +34,47 @@ jobs:
         run: uv pip install pyinstaller pillow  # If not in pyproject.toml, install additionally
 
       - name: Convert icon for Windows
-        if: matrix.os == 'windows-latest'
         run: |
           uv run python -c "
           from PIL import Image
           icon = Image.open('icon/icon.png')
           icon.save('icon/icon.ico', format='ICO', sizes=[(256,256), (128,128), (64,64), (48,48), (32,32), (16,16)])
           "
+        shell: pwsh
+
+      - name: Build executable for Windows
+        run: |
+          uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v${{ inputs.version }}" main.py
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: executable-windows-latest-v${{ inputs.version }}
+          path: dist/
+
+  build-macos:
+    runs-on: macos-14  # Supports Apple Silicon (ARM64)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'  # Adjust to your Python version
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies with uv
+        run: uv sync  # Assuming pyproject.toml is used; if requirements.txt, change to uv pip install -r requirements.txt
+
+      - name: Install PyInstaller and Pillow (for icon conversion)
+        run: uv pip install pyinstaller pillow  # If not in pyproject.toml, install additionally
 
       - name: Convert icon for macOS
-        if: matrix.os == 'macos-14'
         run: |
           mkdir icon/icon.iconset
           sips -z 16 16     icon/icon.png --out icon/icon.iconset/icon_16x16.png
@@ -59,26 +89,77 @@ jobs:
           sips -z 1024 1024 icon/icon.png --out icon/icon.iconset/icon_512x512@2x.png
           iconutil -c icns icon/icon.iconset -o icon/icon.icns
           rm -rf icon/icon.iconset
-
-      - name: Build executable for Windows
-        if: matrix.os == 'windows-latest'
-        run: |
-          uv run pyinstaller --onefile --icon=icon/icon.ico --name MyApp-v${{ inputs.version }} main.py
-        shell: pwsh
+        shell: bash
 
       - name: Build executable for macOS
-        if: matrix.os == 'macos-14'
         run: |
-          uv run pyinstaller --onefile --icon=icon/icon.icns --name MyApp-v${{ inputs.version }} --windowed main.py
+          uv run pyinstaller --onefile --icon=icon/icon.icns --name "FTIR Tools-v${{ inputs.version }}" --windowed main.py
           # If needed for .app bundle, additionally handle Info.plist
-          if [ -d "dist/MyApp-v${{ inputs.version }}.app" ]; then
-            cp icon/icon.icns "dist/MyApp-v${{ inputs.version }}.app/Contents/Resources/"
-            plutil -replace CFBundleIconFile -string icon.icns "dist/MyApp-v${{ inputs.version }}.app/Contents/Info.plist"
+          if [ -d "dist/FTIR Tools-v${{ inputs.version }}.app" ]; then
+            cp icon/icon.icns "dist/FTIR Tools-v${{ inputs.version }}.app/Contents/Resources/"
+            plutil -replace CFBundleIconFile -string icon.icns "dist/FTIR Tools-v${{ inputs.version }}.app/Contents/Info.plist"
+          fi
+        shell: bash
+
+      - name: Zip macOS .app bundle
+        run: |
+          if [ -d "dist/FTIR Tools-v${{ inputs.version }}.app" ]; then
+            zip -r dist/FTIR Tools-v${{ inputs.version }}.app.zip dist/FTIR Tools-v${{ inputs.version }}.app
           fi
         shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: executable-${{ matrix.os }}-v${{ inputs.version }}
+          name: executable-macos-14-v${{ inputs.version }}
           path: dist/
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: executable-windows-latest-v${{ inputs.version }}
+          path: dist/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: executable-macos-14-v${{ inputs.version }}
+          path: dist/macos
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ inputs.version }}
+          release_name: Release v${{ inputs.version }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Windows executable to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/windows/FTIR Tools-v${{ inputs.version }}.exe
+          asset_name: FTIR Tools-v${{ inputs.version }}-windows.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload macOS executable to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload-cup_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/macos/FTIR Tools-v${{ inputs.version }}.app.zip
+          asset_name: FTIR Tools-v${{ inputs.version }}-macos.zip
+          asset_content_type: application/zip
