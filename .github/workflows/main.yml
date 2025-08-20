@@ -9,7 +9,7 @@ on:
                 default: "1.0.0"
     push:
         branches:
-            - main
+            - master
 
 permissions:
     contents: write # Required for creating GitHub Release and uploading assets
@@ -106,7 +106,7 @@ jobs:
               run: uv pip install pyinstaller pillow # If not in pyproject.toml, install additionally
 
             - name: Set version
-              id: version  
+              id: version
               run: |
                   if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
                       version="${{ inputs.version }}"
