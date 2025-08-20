@@ -39,6 +39,8 @@ from PyQt6.QtWidgets import (
     QMenu,
     QTabWidget,
     QListWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSettings, QEvent
 from PyQt6.QtGui import QFont, QAction, QMouseEvent
@@ -116,6 +118,12 @@ class BaselineCreationTab(QWidget):
         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
 
+        # Enable keyboard events for anchor deletion
+        self.canvas.mpl_connect("key_press_event", self.on_key_press)
+
+        # Make sure the canvas can receive keyboard focus
+        self.canvas.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
         # Store anchors for manual baseline adjustment
         self.anchors = []
         self.selected_anchor = None
@@ -168,10 +176,16 @@ class BaselineCreationTab(QWidget):
         if event.inaxes != self.ax:
             return
 
+        # Only handle left-click for anchor selection (ignore right-click)
+        if event.button != 1:  # 1 = left mouse button
+            return
+
         # Check if we clicked near an anchor point
         if self.anchors:
             # Convert mouse coordinates to display coordinates
-            mouse_display_x, mouse_display_y = self.ax.transData.transform([event.xdata, event.ydata])
+            mouse_display_x, mouse_display_y = self.ax.transData.transform(
+                [event.xdata, event.ydata]
+            )
 
             # Find the closest anchor within a certain pixel radius
             min_pixel_distance = float("inf")
@@ -179,11 +193,18 @@ class BaselineCreationTab(QWidget):
 
             for i, (anchor_x, anchor_y) in enumerate(self.anchors):
                 # Convert anchor coordinates to display coordinates
-                anchor_display_x, anchor_display_y = self.ax.transData.transform([anchor_x, anchor_y])
-                
+                anchor_display_x, anchor_display_y = self.ax.transData.transform(
+                    [anchor_x, anchor_y]
+                )
+
                 # Calculate pixel distance
-                pixel_distance = ((mouse_display_x - anchor_display_x) ** 2 + (mouse_display_y - anchor_display_y) ** 2) ** 0.5
-                if pixel_distance < min_pixel_distance and pixel_distance < 10:  # 10 pixel threshold
+                pixel_distance = (
+                    (mouse_display_x - anchor_display_x) ** 2
+                    + (mouse_display_y - anchor_display_y) ** 2
+                ) ** 0.5
+                if (
+                    pixel_distance < min_pixel_distance and pixel_distance < 10
+                ):  # 10 pixel threshold
                     min_pixel_distance = pixel_distance
                     closest_anchor_idx = i
 
@@ -198,14 +219,39 @@ class BaselineCreationTab(QWidget):
             self.dragging = False
             self.update_preview()  # Redraw to update anchor appearance
 
+    def on_key_press(self, event):
+        """Handle keyboard events"""
+        if event.key == "delete" or event.key == "backspace":
+            # Delete the selected anchor if any
+            if self.selected_anchor is not None:
+                self.remove_single_anchor(self.selected_anchor)
+        elif event.key == "escape":
+            # Deselect anchor on Escape
+            self.selected_anchor = None
+            self.dragging = False
+            self.update_preview()
+
     def on_mouse_move(self, event):
         """Handle mouse move events for dragging anchors"""
         if event.inaxes != self.ax or not self.dragging or self.selected_anchor is None:
             return
 
-        # Update the position of the selected anchor
+        # Update the position of the selected anchor with boundary checks
         if event.xdata is not None and event.ydata is not None:
-            self.anchors[self.selected_anchor] = (event.xdata, event.ydata)
+            # Use fixed axis limits to prevent auto-expansion
+            if hasattr(self, "_fixed_xlim") and hasattr(self, "_fixed_ylim"):
+                x_min, x_max = self._fixed_xlim
+                y_min, y_max = self._fixed_ylim
+            else:
+                # Fallback to current limits if fixed limits not set
+                x_min, x_max = self.ax.get_xlim()
+                y_min, y_max = self.ax.get_ylim()
+
+            # Clamp coordinates within fixed graph bounds
+            constrained_x = max(x_min, min(x_max, event.xdata))
+            constrained_y = max(y_min, min(y_max, event.ydata))
+
+            self.anchors[self.selected_anchor] = (constrained_x, constrained_y)
             self.update_preview()  # Redraw with updated anchor position
 
     def show_plot_context_menu(self, position):
@@ -223,12 +269,34 @@ class BaselineCreationTab(QWidget):
         add_anchor_action.triggered.connect(lambda: self.add_anchor(x_data, y_data))
         menu.addAction(add_anchor_action)
 
-        # Clear anchors action
-        clear_anchors_action = QAction("Clear All Anchors", self)
-        clear_anchors_action.triggered.connect(self.clear_anchors)
-        menu.addAction(clear_anchors_action)
+        # Clear anchors action (only show if there are anchors)
+        if self.anchors:
+            clear_anchors_action = QAction("Clear All Anchors", self)
+            clear_anchors_action.triggered.connect(self.clear_anchors)
+            menu.addAction(clear_anchors_action)
+
+        # Add instructions for anchor deletion
+        if self.anchors:
+            menu.addSeparator()
+            info_action = QAction(
+                "Tip: Click anchor to select, then press Delete to remove", self
+            )
+            info_action.setEnabled(False)  # Make it non-clickable, just informational
+            menu.addAction(info_action)
 
         menu.exec(self.canvas.mapToGlobal(position))
+
+    def remove_single_anchor(self, anchor_idx):
+        """Remove a single anchor by index"""
+        if 0 <= anchor_idx < len(self.anchors):
+            self.anchors.pop(anchor_idx)
+            # Reset selected anchor if it was the removed one
+            if self.selected_anchor == anchor_idx:
+                self.selected_anchor = None
+            elif self.selected_anchor is not None and self.selected_anchor > anchor_idx:
+                # Adjust selected anchor index if it's after the removed anchor
+                self.selected_anchor -= 1
+            self.update_preview()
 
     def add_anchor(self, x, y):
         """Add an anchor point at the specified coordinates"""
@@ -241,9 +309,17 @@ class BaselineCreationTab(QWidget):
                 y_data = np.array(raw_data.get("y", []))
 
                 if len(x_data) > 0 and len(y_data) > 0:
-                    from modules.baseline import baseline_als
+                    from modules.baseline import get_baseline_with_raw
 
-                    als_baseline = baseline_als(y_data, lam=lambda_val, p=p_val)
+                    # Calculate baseline with smoothing if enabled
+                    _, als_baseline, _ = get_baseline_with_raw(
+                        x_data,
+                        y_data,
+                        method="als",
+                        lam=lambda_val,
+                        p=p_val,
+                        smooth=smooth_val,
+                    )
 
                     # Find closest x point and get corresponding baseline y
                     closest_idx = np.argmin(np.abs(x_data - x))
@@ -294,31 +370,31 @@ class BaselineCreationTab(QWidget):
     def _apply_anchor_adjustments(self, x_data, als_baseline):
         """Apply anchor adjustments to ALS baseline with smooth transitions"""
         adjusted_baseline = als_baseline.copy()
-        
+
         if not self.anchors:
             return adjusted_baseline
-        
+
         # Calculate sigma based on data range / 50
         data_range = np.max(x_data) - np.min(x_data)
         sigma = data_range / 50.0  # Smaller influence area
-        
+
         # For each anchor, apply a smooth adjustment
         for anchor_x, anchor_y in self.anchors:
             # Find the closest point in the data
             closest_idx = np.argmin(np.abs(x_data - anchor_x))
             closest_x = x_data[closest_idx]
-            
+
             # Calculate the adjustment needed at this point
             current_baseline_y = als_baseline[closest_idx]
             adjustment = anchor_y - current_baseline_y
-            
+
             # Apply smooth adjustment using a Gaussian-like function
             distances = np.abs(x_data - closest_x)
             weights = np.exp(-0.5 * (distances / sigma) ** 2)
-            
+
             # Apply weighted adjustment
             adjusted_baseline += adjustment * weights
-            
+
         return adjusted_baseline
 
     def update_preview(self):
@@ -330,22 +406,80 @@ class BaselineCreationTab(QWidget):
         y_data = np.array(raw_data.get("y", []))
 
         if len(x_data) == 0 or len(y_data) == 0:
+            # Clear plot and show error message
+            self.ax.clear()
+            self.ax.text(
+                0.5,
+                0.5,
+                "No data available",
+                transform=self.ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
+            self.ax.set_title("Error: No data to display")
+            self.canvas.draw()
             return
+
+        if len(x_data) != len(y_data):
+            # Clear plot and show error message
+            self.ax.clear()
+            self.ax.text(
+                0.5,
+                0.5,
+                "Data dimension mismatch",
+                transform=self.ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
+            self.ax.set_title("Error: Invalid data dimensions")
+            self.canvas.draw()
+            return
+
+        # Store current axis limits to prevent auto-expansion during anchor dragging
+        if hasattr(self, "_fixed_xlim") and hasattr(self, "_fixed_ylim"):
+            stored_xlim = self._fixed_xlim
+            stored_ylim = self._fixed_ylim
+        else:
+            # Initial setup - use data range with some padding
+            x_range = np.max(x_data) - np.min(x_data)
+            y_range = np.max(y_data) - np.min(y_data)
+            x_padding = x_range * 0.02
+            y_padding = y_range * 0.1
+            stored_xlim = (np.min(x_data) - x_padding, np.max(x_data) + x_padding)
+            stored_ylim = (np.min(y_data) - y_padding, np.max(y_data) + y_padding)
+            self._fixed_xlim = stored_xlim
+            self._fixed_ylim = stored_ylim
 
         self.ax.clear()
 
         try:
-            from modules.baseline import baseline_als
+            from modules.baseline import get_baseline_with_raw
 
-            # Calculate ALS baseline
-            als_baseline = baseline_als(y_data, lam=lambda_val, p=p_val)
-            
+            # Always use original raw data for calculation
+            original_y_data = np.array(self.ylk_data["raw_data"]["y"])
+
+            # Calculate baseline with smoothing applied if requested
+            processed_data, als_baseline, _ = get_baseline_with_raw(
+                x_data,
+                original_y_data,
+                method="als",
+                lam=lambda_val,
+                p=p_val,
+                smooth=smooth_val,
+            )
+
             # Apply anchor adjustments to ALS baseline
             adjusted_baseline = self._apply_anchor_adjustments(x_data, als_baseline)
 
             if self.view_toggle_btn.isChecked():
-                # Show corrected data
-                corrected_values = y_data - adjusted_baseline
+                # Show corrected data - use original raw data minus baseline
+                corrected_values = original_y_data - adjusted_baseline
+                # print(f"Debug: Corrected data range: {np.min(corrected_values):.4f} to {np.max(corrected_values):.4f}")
+                # print(f"Debug: Original data range: {np.min(original_y_data):.4f} to {np.max(original_y_data):.4f}")
+                # print(f"Debug: Baseline range: {np.min(adjusted_baseline):.4f} to {np.max(adjusted_baseline):.4f}")
+
                 self.ax.plot(
                     x_data, corrected_values, "g-", label="Corrected", linewidth=1.2
                 )
@@ -355,7 +489,12 @@ class BaselineCreationTab(QWidget):
             else:
                 # Show baseline view (raw + baseline)
                 self.ax.plot(
-                    x_data, y_data, "b-", label="Raw Data", linewidth=1.2, alpha=0.7
+                    x_data,
+                    original_y_data,
+                    "b-",
+                    label="Raw Data",
+                    linewidth=1.2,
+                    alpha=0.7,
                 )
                 self.ax.plot(
                     x_data, adjusted_baseline, "r--", label="Baseline", linewidth=1.5
@@ -364,11 +503,13 @@ class BaselineCreationTab(QWidget):
                     f'Baseline View: {self.ylk_data.get("name", "Unknown")}'
                 )
 
-        except Exception:
+        except Exception as e:
             # If ALS calculation fails, show raw data
-            self.ax.plot(x_data, y_data, "b-", label="Raw Data", linewidth=1.2)
+            print(f"Error in baseline calculation: {e}")
+            original_y_data = np.array(self.ylk_data["raw_data"]["y"])
+            self.ax.plot(x_data, original_y_data, "b-", label="Raw Data", linewidth=1.2)
             self.ax.set_title(
-                f'Raw Data: {self.ylk_data.get("name", "Unknown")} (Baseline calc failed)'
+                f'Raw Data: {self.ylk_data.get("name", "Unknown")} (Baseline calc failed: {str(e)})'
             )
 
         # Draw anchor points if any (only in baseline view)
@@ -377,11 +518,24 @@ class BaselineCreationTab(QWidget):
 
         self.ax.set_xlabel("Wavenumber (cm⁻¹)")
         self.ax.set_ylabel("Absorbance")
-        self.ax.legend()
+        if self.parent_analyzer and self.parent_analyzer.show_legend:
+            self.ax.legend()
         self.ax.grid(True, alpha=0.3)
 
         if self.parent_analyzer and self.parent_analyzer.reverse_x_axis:
             self.ax.invert_xaxis()
+
+        # Restore fixed axis limits to prevent auto-expansion
+        self.ax.set_xlim(stored_xlim)
+
+        # For corrected data, calculate appropriate Y limits instead of using stored ones
+        if self.view_toggle_btn.isChecked():
+            # Let matplotlib auto-scale Y axis for corrected data
+            self.ax.relim()
+            self.ax.autoscale_view(scalex=False, scaley=True)
+        else:
+            # Use stored limits for baseline view
+            self.ax.set_ylim(stored_ylim)
 
         self.canvas.draw()
 
@@ -412,7 +566,11 @@ class BaselineCreationTab(QWidget):
                     x_data, y_data, "b-", label="Raw Data", linewidth=1.2, alpha=0.7
                 )
                 self.ax.plot(
-                    x_data, als_baseline, "r--", label="ALS Baseline", linewidth=1.5
+                    x_data,
+                    np.asarray(als_baseline),
+                    "r--",
+                    label="ALS Baseline",
+                    linewidth=1.5,
                 )
                 self.ax.set_title(
                     f'Baseline View: {self.ylk_data.get("name", "Unknown")}'
@@ -432,13 +590,37 @@ class BaselineCreationTab(QWidget):
         y_data = np.array(raw_data.get("y", []))
 
         if len(x_data) == 0 or len(y_data) == 0:
+            QMessageBox.warning(self, "Error", "No data available to create baseline")
+            return
+
+        if len(x_data) != len(y_data):
+            QMessageBox.warning(self, "Error", "Data dimensions do not match")
+            return
+
+        if len(x_data) < 10:  # Minimum data points for meaningful baseline
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Insufficient data points for baseline calculation (minimum 10 required)",
+            )
             return
 
         try:
-            # Calculate ALS baseline
-            from modules.baseline import baseline_als
-            als_baseline = baseline_als(y_data, lam=lambda_val, p=p_val)
-            
+            # Calculate baseline with smoothing if enabled
+            from modules.baseline import get_baseline_with_raw
+
+            # Always use original raw data for baseline calculation
+            original_y_data = np.array(self.ylk_data["raw_data"]["y"])
+
+            _, als_baseline, _ = get_baseline_with_raw(
+                x_data,
+                original_y_data,
+                method="als",
+                lam=lambda_val,
+                p=p_val,
+                smooth=smooth_val,
+            )
+
             # Apply anchor adjustments to ALS baseline
             baseline_values = self._apply_anchor_adjustments(x_data, als_baseline)
 
@@ -449,7 +631,7 @@ class BaselineCreationTab(QWidget):
                 "p": p_val,
                 "smooth": smooth_val,
             }
-            
+
             # Include anchor data if present
             if self.anchors:
                 baseline_params["anchors"] = self.anchors
@@ -465,32 +647,58 @@ class BaselineCreationTab(QWidget):
                 self.ylk_data["metadata"] = {}
             self.ylk_data["metadata"]["baseline_params"] = baseline_params
 
-            # Find the original YLK file path and save using the helper method
-            data_index = self.parent_analyzer._find_data_index_by_filename(self.filename)
-            if data_index is not None:
-                ylk_file_path = self.parent_analyzer.files[data_index]
-                
-                if save_ylk_file(ylk_file_path, self.ylk_data):
-                    full_filename = os.path.basename(ylk_file_path)
-                    QMessageBox.information(
-                        self, "Success", f"Baseline saved to {full_filename}"
-                    )
-                    # Update the parent's data
-                    self.parent_analyzer.ylk_data_list[data_index] = self.ylk_data
-                    
-                    # Update any selected data that corresponds to this file
-                    if self.filename in self.parent_analyzer.selected_files:
-                        selected_index = self.parent_analyzer.selected_files.index(self.filename)
-                        df = ylk_to_dataframe(self.ylk_data)
-                        if df is not None:
-                            self.parent_analyzer.selected_data[selected_index] = df
-                    
+            # Find the original YLK file path and save using the new structure
+            if self.parent_analyzer is not None:
+                ylk_file_path = None
+                folder_data = None
+                ylk_data_index = None
+
+                # Search through all folders to find the file
+                for folder_path, folder_info in self.parent_analyzer.folders.items():
+                    for i, file_path in enumerate(folder_info["files"]):
+                        if (
+                            os.path.basename(file_path).replace(".ylk", "")
+                            == self.filename
+                        ):
+                            ylk_file_path = file_path
+                            folder_data = folder_info
+                            ylk_data_index = i
+                            break
+                    if ylk_file_path:
+                        break
+
+                if (
+                    ylk_file_path
+                    and folder_data is not None
+                    and ylk_data_index is not None
+                ):
+                    if save_ylk_file(ylk_file_path, self.ylk_data):
+                        full_filename = os.path.basename(ylk_file_path)
+                        QMessageBox.information(
+                            self, "Success", f"Baseline saved to {full_filename}"
+                        )
+                        # Update the folder's YLK data
+                        folder_data["ylk_data"][ylk_data_index] = self.ylk_data
+
+                        # Update any selected data that corresponds to this file
+                        for i, file_key in enumerate(
+                            self.parent_analyzer.selected_files
+                        ):
+                            folder_path, filename = file_key
+                            if filename == self.filename:
+                                df = ylk_to_dataframe(self.ylk_data)
+                                if df is not None:
+                                    self.parent_analyzer.selected_data[i] = df
+                                break
+
                     # Automatically close the tab after saving
                     self.close_tab()
                 else:
-                    QMessageBox.warning(self, "Error", "Failed to save baseline")
+                    QMessageBox.warning(self, "Error", "Could not find file to save")
             else:
-                QMessageBox.warning(self, "Error", f"Could not find file {self.filename}")
+                QMessageBox.warning(
+                    self, "Error", f"Could not find file {self.filename}"
+                )
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Baseline calculation failed: {str(e)}")
@@ -507,18 +715,25 @@ class FTIRAnalyzer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FTIR Data Analysis Tool")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1600, 800)
+        # self.showFullScreen()
 
-        # Data storage
-        self.files = []
-        self.ylk_data_list = []  # Store YLK data instead of DataFrame
+        # Data storage - updated for multi-folder support
+        self.folders = {}  # Dict: folder_path -> {'files': [], 'ylk_data': []}
         self.selected_data = []
-        self.selected_files = []
+        self.selected_files = []  # Store as (folder_path, filename) tuples
+        self.visible_files = []  # Track which selected files are visible in plot
         self.reverse_x_axis = False
         self.recent_folders = []
         self.show_baseline_corrected = (
             False  # Toggle for raw vs baseline-corrected data
         )
+        self.show_normalized = True  # Toggle for normalized vs absolute values
+        self.show_legend = True  # Toggle for showing/hiding legend
+        self.show_coordinates = (
+            False  # Toggle for showing wavelength coordinates on hover
+        )
+        self.auto_highlight_ranges = True  # Auto-highlight similar wavenumber ranges
 
         # Settings for recent folders
         self.settings = QSettings("FTIRTools", "FTIRAnalyzer")
@@ -541,21 +756,22 @@ class FTIRAnalyzer(QMainWindow):
         menubar = QMenuBar(self)
         self.setMenuBar(menubar)
 
-        # File menuß
+        # File menu
         file_menu = menubar.addMenu("File")
+        assert file_menu is not None
 
-        open_folder_action = QAction("Open Folder", self)
-        open_folder_action.triggered.connect(self.select_folder)
-        file_menu.addAction(open_folder_action)
+        add_folder_action = QAction("Add Folder", self)
+        add_folder_action.triggered.connect(self.select_folder)
+        file_menu.addAction(add_folder_action)
 
         file_menu.addSeparator()
 
         # Recent folders submenu
         self.recent_menu = file_menu.addMenu("Open Recent")
         self.update_recent_menu()
-        
+
         file_menu.addSeparator()
-        
+
         # Export CSV action
         export_csv_action = QAction("Export Current Graph as CSV", self)
         export_csv_action.triggered.connect(self.export_current_graph_csv)
@@ -563,11 +779,22 @@ class FTIRAnalyzer(QMainWindow):
 
         # Tools menu
         tools_menu = menubar.addMenu("Tools")
+        assert tools_menu is not None
 
         self.reverse_action = QAction("Reverse X-axis", self)
         self.reverse_action.setCheckable(True)
         self.reverse_action.triggered.connect(self.on_reverse_changed)
         tools_menu.addAction(self.reverse_action)
+
+        self.legend_action = QAction("Hide Legend", self)
+        self.legend_action.setCheckable(True)
+        self.legend_action.triggered.connect(self.on_legend_toggle)
+        tools_menu.addAction(self.legend_action)
+
+        self.coordinates_action = QAction("Show Coordinates on Hover", self)
+        self.coordinates_action.setCheckable(True)
+        self.coordinates_action.triggered.connect(self.on_coordinates_toggle)
+        tools_menu.addAction(self.coordinates_action)
 
     def create_main_tab(self):
         main_widget = QWidget()
@@ -582,11 +809,12 @@ class FTIRAnalyzer(QMainWindow):
         file_group = QGroupBox("Files")
         file_layout = QVBoxLayout(file_group)
 
-        # All files list (no context menu)
+        # All files tree (hierarchical folder structure)
         file_layout.addWidget(QLabel("All Files:"))
-        self.file_listbox = QListWidget()
-        self.file_listbox.itemDoubleClicked.connect(self.on_file_double_click)
-        file_layout.addWidget(self.file_listbox)
+        self.file_tree = QTreeWidget()
+        self.file_tree.setHeaderHidden(True)  # Hide column header
+        self.file_tree.itemDoubleClicked.connect(self.on_file_double_click)
+        file_layout.addWidget(self.file_tree)
 
         # Control buttons
         button_layout = QHBoxLayout()
@@ -602,7 +830,7 @@ class FTIRAnalyzer(QMainWindow):
         button_layout.addWidget(clear_btn)
         file_layout.addLayout(button_layout)
 
-        # Selected files list with right-click menu
+        # Selected files list with right-click menu and checkboxes
         file_layout.addWidget(QLabel("Selected for Analysis:"))
         self.selected_listbox = QListWidget()
         self.selected_listbox.setContextMenuPolicy(
@@ -612,6 +840,10 @@ class FTIRAnalyzer(QMainWindow):
             self.show_selected_context_menu
         )
         self.selected_listbox.itemDoubleClicked.connect(self.on_selected_double_click)
+        self.selected_listbox.itemChanged.connect(self.on_selected_item_changed)
+
+        # Track mouse press position to distinguish checkbox clicks from double-clicks
+        self.selected_listbox.mousePressEvent = self.selected_list_mouse_press
         file_layout.addWidget(self.selected_listbox)
 
         left_layout.addWidget(file_group)
@@ -620,9 +852,11 @@ class FTIRAnalyzer(QMainWindow):
         analysis_group = QGroupBox("Analysis")
         analysis_layout = QVBoxLayout(analysis_group)
 
-        self.plot_btn = QPushButton("Plot Spectra")
-        self.plot_btn.clicked.connect(self.plot_spectra)
-        analysis_layout.addWidget(self.plot_btn)
+        # Normalization toggle button
+        self.normalize_btn = QPushButton("Show Normalized Data")
+        self.normalize_btn.clicked.connect(self.toggle_normalization)
+        self.normalize_btn.setCheckable(True)
+        analysis_layout.addWidget(self.normalize_btn)
 
         # Toggle button for raw/baseline-corrected data
         self.data_toggle_btn = QPushButton("Show Baseline-Corrected Data")
@@ -630,9 +864,9 @@ class FTIRAnalyzer(QMainWindow):
         self.data_toggle_btn.setCheckable(True)
         analysis_layout.addWidget(self.data_toggle_btn)
 
-        self.corr_btn = QPushButton("Calculate Correlation")
-        self.corr_btn.clicked.connect(self.calculate_correlation)
-        analysis_layout.addWidget(self.corr_btn)
+        # self.corr_btn = QPushButton("Calculate Correlation")
+        # self.corr_btn.clicked.connect(self.calculate_correlation)
+        # analysis_layout.addWidget(self.corr_btn)
 
         left_layout.addWidget(analysis_group)
         left_layout.addStretch()
@@ -668,6 +902,158 @@ class FTIRAnalyzer(QMainWindow):
         if self.selected_data:
             self.plot_spectra()
 
+    def on_legend_toggle(self, state):
+        if isinstance(state, bool):
+            self.show_legend = not state  # Action is "Hide Legend", so invert
+        else:
+            self.show_legend = not (state == Qt.CheckState.Checked.value)
+        # Update the current plot if there are selected files
+        if self.selected_data:
+            self.plot_spectra()
+
+    def on_coordinates_toggle(self, state):
+        if isinstance(state, bool):
+            self.show_coordinates = state
+        else:
+            self.show_coordinates = state == Qt.CheckState.Checked.value
+
+        # Enable/disable hover functionality
+        if self.show_coordinates:
+            if not hasattr(self, "_hover_connection_id"):
+                self._hover_connection_id = self.canvas.mpl_connect(
+                    "motion_notify_event", self.on_main_plot_hover
+                )
+        else:
+            # Disconnect hover event and clear crosshairs
+            if hasattr(self, "_hover_connection_id"):
+                self.canvas.mpl_disconnect(self._hover_connection_id)
+                delattr(self, "_hover_connection_id")
+
+            # Clean up crosshairs and text
+            if hasattr(self, "crosshair_h"):
+                try:
+                    self.crosshair_h.set_visible(False)
+                    # Don't try to remove axhline/axvline, just hide them
+                except:
+                    pass
+                del self.crosshair_h
+            if hasattr(self, "crosshair_v"):
+                try:
+                    self.crosshair_v.set_visible(False)
+                except:
+                    pass
+                del self.crosshair_v
+            if hasattr(self, "coord_text"):
+                self.coord_text.remove()
+                del self.coord_text
+            if hasattr(
+                self, "hover_annotation"
+            ):  # Clean up old annotation if it exists
+                self.hover_annotation.remove()
+                del self.hover_annotation
+            self.canvas.draw()
+
+    def on_main_plot_hover(self, event):
+        """Handle mouse hover over main plot to show coordinates with crosshairs"""
+        if event.inaxes != self.ax or not self.selected_data:
+            # Hide crosshairs if mouse is outside plot area
+            self._hide_crosshairs()
+            return
+
+        if event.xdata is None or event.ydata is None:
+            return
+
+        # Store current axis limits to prevent shifting
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
+        # Create crosshairs if they don't exist
+        if not hasattr(self, "crosshair_h"):
+            self.crosshair_h = self.ax.axhline(
+                y=event.ydata, color="gray", linestyle="--", alpha=0.7, linewidth=0.8
+            )
+            self.crosshair_v = self.ax.axvline(
+                x=event.xdata, color="gray", linestyle="--", alpha=0.7, linewidth=0.8
+            )
+        else:
+            # Update positions
+            self.crosshair_h.set_ydata([event.ydata, event.ydata])
+            self.crosshair_v.set_xdata([event.xdata, event.xdata])
+
+        # Make visible
+        self.crosshair_h.set_visible(True)
+        self.crosshair_v.set_visible(True)
+
+        # Update coordinate text at bottom of plot
+        wavenumber = event.xdata
+        absorbance = event.ydata
+
+        # Create or update text display
+        if not hasattr(self, "coord_text"):
+            # Position text at bottom left of the plot
+            self.coord_text = self.ax.text(
+                0.02,
+                0.02,
+                "",
+                transform=self.ax.transAxes,
+                fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+            )
+
+        # Format text
+        text = f"Wavenumber: {wavenumber:.1f} cm⁻¹  |  Absorbance: {absorbance:.4f}"
+        self.coord_text.set_text(text)
+        self.coord_text.set_visible(True)
+
+        # Restore axis limits to prevent shifting
+        self.ax.set_xlim(xlim)
+        self.ax.set_ylim(ylim)
+
+        self.canvas.draw()
+
+    def _hide_crosshairs(self):
+        """Hide crosshairs and coordinate text"""
+        if hasattr(self, "crosshair_h"):
+            self.crosshair_h.set_visible(False)
+            self.crosshair_v.set_visible(False)
+        if hasattr(self, "coord_text"):
+            self.coord_text.set_visible(False)
+        self.canvas.draw()
+
+    def on_selected_item_changed(self, item):
+        """Handle checkbox changes for selected files visibility"""
+        file_key = item.data(Qt.ItemDataRole.UserRole)  # Get the stored file key
+        is_visible = item.checkState() == Qt.CheckState.Checked
+
+        if file_key in self.selected_files:
+            file_index = self.selected_files.index(file_key)
+            # Ensure visible_files list is the same size
+            while len(self.visible_files) <= file_index:
+                self.visible_files.append(True)
+            self.visible_files[file_index] = is_visible
+
+            # Update plot
+            if self.selected_data:
+                self.plot_spectra()
+
+    def selected_list_mouse_press(self, event):
+        """Custom mouse press handler for selected files list to track click position"""
+        # Store the original mousePressEvent behavior
+        original_mouse_press = QListWidget.mousePressEvent
+        original_mouse_press(self.selected_listbox, event)
+
+        # Store click position for double-click detection
+        item = self.selected_listbox.itemAt(event.pos())
+        if item:
+            # Check if click is on the checkbox area (left part of item)
+            item_rect = self.selected_listbox.visualItemRect(item)
+            checkbox_area_width = 20  # Approximate checkbox width
+            self._last_click_on_checkbox = (
+                event.pos().x() < item_rect.left() + checkbox_area_width
+            )
+        else:
+            self._last_click_on_checkbox = False
+
     def load_recent_folders(self):
         """Load recent folders from settings"""
         self.recent_folders = self.settings.value("recent_folders", [])
@@ -690,18 +1076,19 @@ class FTIRAnalyzer(QMainWindow):
 
     def update_recent_menu(self):
         """Update the recent folders menu"""
-        self.recent_menu.clear()
-        for folder in self.recent_folders:
-            action = QAction(folder, self)
-            action.triggered.connect(
-                lambda checked, path=folder: self.process_folder(path)
-            )
-            self.recent_menu.addAction(action)
+        if self.recent_menu is not None:
+            self.recent_menu.clear()
+            for folder in self.recent_folders:
+                action = QAction(folder, self)
+                action.triggered.connect(
+                    lambda checked, path=folder: self.process_folder(path)
+                )
+                self.recent_menu.addAction(action)
 
-        if not self.recent_folders:
-            action = QAction("No recent folders", self)
-            action.setEnabled(False)
-            self.recent_menu.addAction(action)
+            if not self.recent_folders:
+                action = QAction("No recent folders", self)
+                action.setEnabled(False)
+                self.recent_menu.addAction(action)
 
     def show_selected_context_menu(self, position):
         """Show right-click context menu for selected files list"""
@@ -733,46 +1120,111 @@ class FTIRAnalyzer(QMainWindow):
         if self.selected_data:
             self.plot_spectra()
 
+    def toggle_normalization(self):
+        """Toggle between normalized and absolute values display"""
+        self.show_normalized = self.normalize_btn.isChecked()
+
+        # Update button text
+        if self.show_normalized:
+            self.normalize_btn.setText("Show Absolute Values")
+        else:
+            self.normalize_btn.setText("Show Normalized Data")
+
+        # Update plot if there are selected files
+        if self.selected_data:
+            self.plot_spectra()
+
     def create_baseline_for_file(self, filename):
         """Create a new baseline tab for the specified file"""
-        # Find the YLK data for this file using the helper method
-        data_index = self._find_data_index_by_filename(filename)
-        if data_index is None:
+        # Find the YLK data for this file using the file key
+        ylk_data = None
+        file_key = None
+
+        # Extract just the filename part from the display name if needed
+        if " (" in filename:
+            # Handle display format "filename (folder)"
+            actual_filename = filename.split(" (")[0]
+        else:
+            actual_filename = filename
+
+        # Search through selected files to find matching data
+        for i, selected_file_key in enumerate(self.selected_files):
+            folder_path, file_name = selected_file_key
+            if file_name == actual_filename or filename.startswith(file_name):
+                # Found the file, now get the YLK data from folders
+                if folder_path in self.folders:
+                    folder_data = self.folders[folder_path]
+                    for j, file_path in enumerate(folder_data["files"]):
+                        if os.path.basename(file_path).replace(".ylk", "") == file_name:
+                            ylk_data = folder_data["ylk_data"][j]
+                            file_key = selected_file_key
+                            break
+                if ylk_data:
+                    break
+
+        if ylk_data is None:
             QMessageBox.warning(
                 self, "Error", f"Could not find data for file {filename}"
             )
             return
-        
-        ylk_data = self.ylk_data_list[data_index]
 
         # Create baseline creation tab
-        baseline_tab = BaselineCreationTab(ylk_data, filename, self)
-        tab_name = f"Baseline: {filename}"
+        baseline_tab = BaselineCreationTab(ylk_data, actual_filename, self)
+        tab_name = f"Baseline: {actual_filename}"
         tab_index = self.tab_widget.addTab(baseline_tab, tab_name)
         self.tab_widget.setCurrentIndex(tab_index)
 
     def add_to_selected(self):
         """Add selected files to analysis list"""
-        selected_items = self.file_listbox.selectedItems()
+        selected_items = self.file_tree.selectedItems()
         items_to_remove = []
 
         for item in selected_items:
-            filename = item.text()
-            if filename not in self.selected_files:
-                index = self.file_listbox.row(item)
-                self.selected_files.append(filename)
-                # Convert YLK data to DataFrame for analysis
-                ylk_data = self.ylk_data_list[index]
-                df = ylk_to_dataframe(ylk_data)
-                if df is not None:
-                    self.selected_data.append(df)
-                    self.selected_listbox.addItem(filename)
-                    items_to_remove.append(item)
+            # Skip folder items (only process file items)
+            if item.parent() is None:  # This is a folder item
+                continue
 
-        # Remove selected files from All Files list
+            folder_path = item.parent().text(0)  # Get folder name
+            filename = item.text(0)  # Get filename
+            file_key = (folder_path, filename)
+
+            if file_key not in self.selected_files:
+                self.selected_files.append(file_key)
+                self.visible_files.append(True)  # New files are visible by default
+
+                # Find YLK data for this file
+                if folder_path in self.folders:
+                    folder_data = self.folders[folder_path]
+                    for i, file_path in enumerate(folder_data["files"]):
+                        if os.path.basename(file_path).replace(".ylk", "") == filename:
+                            ylk_data = folder_data["ylk_data"][i]
+                            df = ylk_to_dataframe(ylk_data)
+                            if df is not None:
+                                self.selected_data.append(df)
+                                # Create checkable item with folder info
+                                display_name = (
+                                    f"{filename} ({os.path.basename(folder_path)})"
+                                )
+                                list_item = QListWidgetItem(display_name)
+                                list_item.setFlags(
+                                    list_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                                )
+                                list_item.setCheckState(
+                                    Qt.CheckState.Checked
+                                )  # Checked by default
+                                # Store the file key as item data
+                                list_item.setData(Qt.ItemDataRole.UserRole, file_key)
+                                self.selected_listbox.addItem(list_item)
+                                items_to_remove.append(item)
+                            break
+
+        # Remove selected files from tree
         for item in items_to_remove:
-            row = self.file_listbox.row(item)
-            self.file_listbox.takeItem(row)
+            parent = item.parent()
+            if parent:
+                parent.removeChild(item)
+                # If parent folder is now empty, we could optionally remove it
+                # but let's keep empty folders visible
 
         # Update main plot
         if self.selected_data:
@@ -789,10 +1241,13 @@ class FTIRAnalyzer(QMainWindow):
                 file_index = self.selected_files.index(filename)
                 self.selected_files.pop(file_index)
                 self.selected_data.pop(file_index)
+                # Also remove from visible_files if it exists
+                if file_index < len(self.visible_files):
+                    self.visible_files.pop(file_index)
 
-        # Rebuild All Files list to maintain proper order
-        self._rebuild_all_files_list()
-        
+        # Rebuild file tree to restore files
+        self._rebuild_file_tree()
+
         # Update main plot
         self.plot_spectra()
 
@@ -801,9 +1256,10 @@ class FTIRAnalyzer(QMainWindow):
         self.selected_listbox.clear()
         self.selected_files.clear()
         self.selected_data.clear()
+        self.visible_files.clear()  # Also clear visibility tracking
 
-        # Rebuild All Files list to maintain proper order
-        self._rebuild_all_files_list()
+        # Rebuild file tree to restore all files
+        self._rebuild_file_tree()
 
         # Clear main plot
         self.ax.clear()
@@ -813,51 +1269,69 @@ class FTIRAnalyzer(QMainWindow):
         self.canvas.draw()
 
     def on_file_double_click(self, item):
-        """Handle double-click on file listbox to move file to selected"""
-        filename = item.text()
-        if filename not in self.selected_files:
-            # Find the correct index in the master data list
-            data_index = self._find_data_index_by_filename(filename)
-            if data_index is not None:
-                self.selected_files.append(filename)
-                # Convert YLK data to DataFrame for analysis
-                ylk_data = self.ylk_data_list[data_index]
-                df = ylk_to_dataframe(ylk_data)
-                if df is not None:
-                    self.selected_data.append(df)
-                    self.selected_listbox.addItem(filename)
-                    # Rebuild All Files list to hide selected files
-                    self._rebuild_all_files_list()
-                    self.plot_spectra()
+        """Handle double-click on file tree to move file to selected"""
+        # Skip folder items (only process file items)
+        if item.parent() is None:  # This is a folder item
+            return
+
+        folder_path = item.parent().data(0, Qt.ItemDataRole.UserRole)  # Get folder path
+        filename = item.text(0)  # Get filename
+        file_key = (folder_path, filename)
+
+        if file_key not in self.selected_files:
+            self.selected_files.append(file_key)
+            self.visible_files.append(True)  # New files are visible by default
+
+            # Find YLK data for this file
+            if folder_path in self.folders:
+                folder_data = self.folders[folder_path]
+                for i, file_path in enumerate(folder_data["files"]):
+                    if os.path.basename(file_path).replace(".ylk", "") == filename:
+                        ylk_data = folder_data["ylk_data"][i]
+                        df = ylk_to_dataframe(ylk_data)
+                        if df is not None:
+                            self.selected_data.append(df)
+                            # Create checkable item with folder info
+                            display_name = (
+                                f"{filename} ({os.path.basename(folder_path)})"
+                            )
+                            list_item = QListWidgetItem(display_name)
+                            list_item.setFlags(
+                                list_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                            )
+                            list_item.setCheckState(
+                                Qt.CheckState.Checked
+                            )  # Checked by default
+                            # Store the file key as item data
+                            list_item.setData(Qt.ItemDataRole.UserRole, file_key)
+                            self.selected_listbox.addItem(list_item)
+                            # Rebuild tree to hide selected files
+                            self._rebuild_file_tree()
+                            self.plot_spectra()
+                        break
 
     def on_selected_double_click(self, item):
         """Handle double-click on selected listbox to remove file from selected"""
-        filename = item.text()
+        # Don't remove file if the double-click was on the checkbox area
+        if hasattr(self, "_last_click_on_checkbox") and self._last_click_on_checkbox:
+            return
+
+        file_key = item.data(Qt.ItemDataRole.UserRole)  # Get the stored file key
         row = self.selected_listbox.row(item)
         self.selected_listbox.takeItem(row)
-        if filename in self.selected_files:
-            file_index = self.selected_files.index(filename)
+        if file_key in self.selected_files:
+            file_index = self.selected_files.index(file_key)
             self.selected_files.pop(file_index)
             self.selected_data.pop(file_index)
-            # Rebuild All Files list to maintain proper order
-            self._rebuild_all_files_list()
+            # Also remove from visible_files if it exists
+            if file_index < len(self.visible_files):
+                self.visible_files.pop(file_index)
+            # Rebuild file tree to restore files
+            self._rebuild_file_tree()
             self.plot_spectra()
 
-    def _find_data_index_by_filename(self, filename):
-        """Find the index in ylk_data_list for a given display filename"""
-        for i, ylk_data in enumerate(self.ylk_data_list):
-            # Compare with the display name (without .ylk extension)
-            if ylk_data.get("name", "") == filename:
-                return i
-        return None
-
-    def _rebuild_all_files_list(self):
-        """Rebuild the All Files list in proper order, excluding selected files"""
-        self.file_listbox.clear()
-        for ylk_data in self.ylk_data_list:
-            display_name = ylk_data.get("name", "")
-            if display_name and display_name not in self.selected_files:
-                self.file_listbox.addItem(display_name)
+    # Note: _find_data_index_by_filename and _rebuild_all_files_list methods removed
+    # as they are no longer needed with the new multi-folder tree structure
 
     def export_current_graph_csv(self):
         """Export current graph data (raw and corrected) to CSV file"""
@@ -870,69 +1344,93 @@ class FTIRAnalyzer(QMainWindow):
         # Get save file path
         default_filename = "ftir_export.csv"
         file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export CSV", 
-            default_filename, 
-            "CSV files (*.csv);;All files (*.*)"
+            self, "Export CSV", default_filename, "CSV files (*.csv);;All files (*.*)"
         )
-        
+
         if not file_path:
             return
 
         try:
             import csv
             import pandas as pd
-            
+
             # Collect all data first
             all_data = {}
-            
-            for filename, df in zip(self.selected_files, self.selected_data):
+
+            for file_key, df in zip(self.selected_files, self.selected_data):
                 # Get raw data
-                wavenumber = df['wavenumber'].values
-                raw_absorbance = df['absorbance'].values
-                
+                wavenumber = df["wavenumber"].values
+                raw_absorbance = df["absorbance"].values
+
                 # Calculate corrected data using baseline if available
-                data_index = self._find_data_index_by_filename(filename)
+                folder_path, file_name = file_key
                 corrected_absorbance = raw_absorbance.copy()  # Default to raw
-                
-                if data_index is not None:
-                    ylk_data = self.ylk_data_list[data_index]
+                ylk_data = None
+
+                # Find YLK data for this file
+                if folder_path in self.folders:
+                    folder_data = self.folders[folder_path]
+                    for j, file_path in enumerate(folder_data["files"]):
+                        if os.path.basename(file_path).replace(".ylk", "") == file_name:
+                            ylk_data = folder_data["ylk_data"][j]
+                            break
+
+                if ylk_data is not None:
                     baseline_data = ylk_data.get("baseline", {})
-                    
+
                     if baseline_data.get("x") and baseline_data.get("y"):
-                        # Use saved baseline
-                        baseline_x = np.array(baseline_data["x"])
-                        baseline_y = np.array(baseline_data["y"])
-                        
-                        # Interpolate baseline to match raw data x-values if needed
-                        if len(baseline_x) != len(wavenumber) or not np.allclose(baseline_x, wavenumber):
-                            from scipy.interpolate import interp1d
-                            baseline_func = interp1d(baseline_x, baseline_y, kind='linear', fill_value='extrapolate')
-                            baseline_interpolated = baseline_func(wavenumber)
-                        else:
-                            baseline_interpolated = baseline_y
-                        
-                        corrected_absorbance = raw_absorbance - baseline_interpolated
-                
+                        try:
+                            # Use saved baseline
+                            baseline_x = np.array(baseline_data["x"])
+                            baseline_y = np.array(baseline_data["y"])
+
+                            # Interpolate baseline to match raw data x-values if needed
+                            if len(baseline_x) != len(wavenumber) or not np.allclose(
+                                baseline_x, wavenumber, rtol=1e-6
+                            ):
+                                from scipy.interpolate import interp1d
+
+                                baseline_func = interp1d(
+                                    baseline_x,
+                                    baseline_y,
+                                    kind="linear",
+                                    bounds_error=False,
+                                    fill_value="extrapolate",
+                                )
+                                baseline_interpolated = baseline_func(wavenumber)
+                            else:
+                                baseline_interpolated = baseline_y
+
+                            corrected_absorbance = (
+                                raw_absorbance - baseline_interpolated
+                            )
+                        except Exception as e:
+                            print(
+                                f"Error calculating baseline correction for {file_name}: {e}"
+                            )
+                            # Keep raw data as corrected if baseline calculation fails
+
                 # Clean filename for column names
-                clean_filename = filename.replace(" ", "_").replace(".", "_").replace("-", "_")
-                
+                clean_filename = (
+                    file_name.replace(" ", "_").replace(".", "_").replace("-", "_")
+                )
+
                 # Store data
-                all_data[f'wavenumber_{clean_filename}'] = wavenumber
-                all_data[f'{clean_filename}_raw'] = raw_absorbance
-                all_data[f'{clean_filename}_corrected'] = corrected_absorbance
+                all_data[f"wavenumber_{clean_filename}"] = wavenumber
+                all_data[f"{clean_filename}_raw"] = raw_absorbance
+                all_data[f"{clean_filename}_corrected"] = corrected_absorbance
 
             # Create DataFrame and save
             if all_data:
                 df_export = pd.DataFrame(all_data)
                 df_export.to_csv(file_path, index=False)
-                
+
                 QMessageBox.information(
-                    self, 
-                    "Export Complete", 
+                    self,
+                    "Export Complete",
                     f"Data exported successfully to:\n{file_path}\n\n"
                     f"Exported {len(self.selected_files)} file(s).\n"
-                    f"Each file has wavenumber, raw, and corrected columns."
+                    f"Each file has wavenumber, raw, and corrected columns.",
                 )
             else:
                 QMessageBox.warning(self, "Export Error", "No data to export")
@@ -951,17 +1449,20 @@ class FTIRAnalyzer(QMainWindow):
             self.process_folder(folder_path)
 
     def process_folder(self, folder_path):
-        """Process folder: convert JWS files to YLK format and load existing YLK files"""
+        """Add folder: convert JWS files to YLK format and load existing YLK files"""
         try:
             # Create converted_ylk subfolder
             ylk_folder = os.path.join(folder_path, "converted_ylk")
             os.makedirs(ylk_folder, exist_ok=True)
 
-            # Clear lists
-            self.file_listbox.clear()
-            self.ylk_data_list = []
-            self.files = []
-            self.clear_selected()
+            # Check if folder is already loaded
+            if folder_path in self.folders:
+                QMessageBox.information(
+                    self,
+                    "Folder Already Loaded",
+                    f"Folder {folder_path} is already loaded.",
+                )
+                return
 
             # Scan folder for .jws and .ylk files
             processed_files = []
@@ -985,26 +1486,138 @@ class FTIRAnalyzer(QMainWindow):
 
             # Load all YLK files - sort by filename
             processed_files.sort()
+            ylk_data_list = []
+            files = []
+
             for ylk_file in processed_files:
                 try:
                     ylk_data = load_ylk_file(ylk_file)
                     if ylk_data:
-                        self.ylk_data_list.append(ylk_data)
-                        self.files.append(ylk_file)
-                        # Display filename without .ylk extension
-                        display_name = os.path.basename(ylk_file).replace(".ylk", "")
-                        self.file_listbox.addItem(display_name)
+                        ylk_data_list.append(ylk_data)
+                        files.append(ylk_file)
                 except Exception as e:
                     QMessageBox.warning(
                         self, "Warning", f"Unable to load file {ylk_file}: {str(e)}"
                     )
 
+            # Store folder data
+            self.folders[folder_path] = {"files": files, "ylk_data": ylk_data_list}
+
+            # Update tree widget
+            self._rebuild_file_tree()
+
             QMessageBox.information(
-                self, "Complete", f"Processed {len(processed_files)} files"
+                self, "Complete", f"Added folder with {len(processed_files)} files"
             )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing folder: {str(e)}")
+
+    def _rebuild_file_tree(self):
+        """Rebuild the file tree with hierarchical folder structure"""
+        # Store current expansion states before clearing
+        expanded_folders = set()
+        for i in range(self.file_tree.topLevelItemCount()):
+            item = self.file_tree.topLevelItem(i)
+            if item and item.isExpanded():
+                folder_path = item.data(0, Qt.ItemDataRole.UserRole)
+                if folder_path:
+                    expanded_folders.add(folder_path)
+
+        self.file_tree.clear()
+
+        # Get reference wavenumber ranges from selected files for highlighting
+        reference_ranges = self._get_selected_wavenumber_ranges()
+
+        for folder_path, folder_data in self.folders.items():
+            # Create folder item
+            folder_name = os.path.basename(folder_path)
+            folder_item = QTreeWidgetItem([folder_name])
+            folder_item.setData(
+                0, Qt.ItemDataRole.UserRole, folder_path
+            )  # Store full path
+
+            # Add file items under folder
+            for i, file_path in enumerate(folder_data["files"]):
+                ylk_data = folder_data["ylk_data"][i]
+                filename = os.path.basename(file_path).replace(".ylk", "")
+
+                # Skip files that are already selected
+                if (folder_path, filename) not in self.selected_files:
+                    file_item = QTreeWidgetItem([filename])
+                    file_item.setData(
+                        0, Qt.ItemDataRole.UserRole, file_path
+                    )  # Store full file path
+
+                    # Apply highlighting for similar wavenumber ranges
+                    if self.auto_highlight_ranges and reference_ranges:
+                        file_range = self._get_file_wavenumber_range(ylk_data)
+                        if self._is_similar_range(file_range, reference_ranges):
+                            # Keep similar files in normal color (black) and add tooltip
+                            file_item.setToolTip(
+                                0,
+                                f"Similar range: {file_range[0]:.0f}-{file_range[1]:.0f} cm⁻¹",
+                            )
+                        else:
+                            # Make non-similar files light gray
+                            file_item.setForeground(0, Qt.GlobalColor.darkGray)
+
+                    folder_item.addChild(file_item)
+
+            # Only add folder to tree if it has children (unselected files)
+            if folder_item.childCount() > 0:
+                self.file_tree.addTopLevelItem(folder_item)
+                # Restore expansion state or expand by default for new folders
+                if folder_path in expanded_folders or len(expanded_folders) == 0:
+                    folder_item.setExpanded(True)
+
+    def _get_selected_wavenumber_ranges(self):
+        """Get wavenumber ranges from currently selected files"""
+        ranges = []
+        for file_key in self.selected_files:
+            folder_path, filename = file_key
+            if folder_path in self.folders:
+                folder_data = self.folders[folder_path]
+                for i, file_path in enumerate(folder_data["files"]):
+                    if os.path.basename(file_path).replace(".ylk", "") == filename:
+                        ylk_data = folder_data["ylk_data"][i]
+                        file_range = self._get_file_wavenumber_range(ylk_data)
+                        if file_range:
+                            ranges.append(file_range)
+                        break
+        return ranges
+
+    def _get_file_wavenumber_range(self, ylk_data):
+        """Get wavenumber range (min, max) from YLK data"""
+        try:
+            raw_data = ylk_data.get("raw_data", {})
+            x_data = raw_data.get("x", [])
+            if x_data:
+                return (min(x_data), max(x_data))
+        except Exception:
+            pass
+        return None
+
+    def _is_similar_range(self, file_range, reference_ranges, tolerance=50):
+        """Check if a file's wavenumber range is similar to any reference range"""
+        if not file_range or not reference_ranges:
+            return False
+
+        file_min, file_max = file_range
+
+        for ref_min, ref_max in reference_ranges:
+            # Check if ranges overlap or are within tolerance
+            min_diff = abs(file_min - ref_min)
+            max_diff = abs(file_max - ref_max)
+
+            # Consider similar if both endpoints are within tolerance
+            # or if there's significant overlap
+            if (min_diff <= tolerance and max_diff <= tolerance) or (
+                file_min <= ref_max and file_max >= ref_min
+            ):  # Ranges overlap
+                return True
+
+        return False
 
     def plot_spectra(self):
         """Plot selected spectra in the main window canvas"""
@@ -1019,40 +1632,92 @@ class FTIRAnalyzer(QMainWindow):
             self.canvas.draw()
             return
 
-        # Plot each selected spectrum
+        # Plot each selected spectrum (only visible ones)
+        visible_count = 0
         for i, df in enumerate(self.selected_data):
-            filename = self.selected_files[i]  # Already without .ylk extension
+            # Skip if file is not visible
+            if i < len(self.visible_files) and not self.visible_files[i]:
+                continue
+
+            file_key = self.selected_files[i]
+            folder_path, filename = file_key  # Extract filename from file key
+            visible_count += 1
 
             if self.show_baseline_corrected:
                 # Show baseline-corrected data
                 # Find the corresponding YLK data to get baseline-corrected values
                 ylk_data = None
-                # Find the YLK data by matching filename
-                for file_path_idx, file_path in enumerate(self.files):
-                    if os.path.basename(file_path).replace(".ylk", "") == filename:
-                        ylk_data = self.ylk_data_list[file_path_idx]
-                        break
+                # Find the YLK data by matching filename and folder
+                if folder_path in self.folders:
+                    folder_data = self.folders[folder_path]
+                    for j, file_path in enumerate(folder_data["files"]):
+                        if os.path.basename(file_path).replace(".ylk", "") == filename:
+                            ylk_data = folder_data["ylk_data"][j]
+                            break
 
                 if (
                     ylk_data
                     and ylk_data.get("baseline", {}).get("x")
                     and ylk_data.get("baseline", {}).get("y")
                 ):
-                    # Use baseline-corrected data if available
-                    raw_x = np.array(ylk_data["raw_data"]["x"])
-                    raw_y = np.array(ylk_data["raw_data"]["y"])
-                    baseline_y = np.array(ylk_data["baseline"]["y"])
-                    corrected_y = raw_y - baseline_y
+                    try:
+                        # Use baseline-corrected data if available
+                        raw_x = np.array(ylk_data["raw_data"]["x"])
+                        raw_y = np.array(ylk_data["raw_data"]["y"])
+                        baseline_x = np.array(ylk_data["baseline"]["x"])
+                        baseline_y = np.array(ylk_data["baseline"]["y"])
 
-                    self.ax.plot(
-                        raw_x,
-                        corrected_y,
-                        label=f"{filename} (Baseline-corrected)",
-                        linewidth=1.2,
-                    )
+                        # Ensure baseline and raw data have same x coordinates
+                        if len(baseline_x) != len(raw_x) or not np.allclose(
+                            baseline_x, raw_x
+                        ):
+                            # Interpolate baseline to match raw data x-values
+                            from scipy.interpolate import interp1d
+
+                            baseline_func = interp1d(
+                                baseline_x,
+                                baseline_y,
+                                kind="linear",
+                                bounds_error=False,
+                                fill_value="extrapolate",
+                            )
+                            baseline_y_interp = baseline_func(raw_x)
+                        else:
+                            baseline_y_interp = baseline_y
+
+                        corrected_y = raw_y - baseline_y_interp
+
+                        # Apply normalization if requested
+                        if self.show_normalized:
+                            corrected_y = (
+                                corrected_y / np.max(np.abs(corrected_y))
+                                if np.max(np.abs(corrected_y)) > 0
+                                else corrected_y
+                            )
+
+                        self.ax.plot(
+                            raw_x,
+                            corrected_y,
+                            label=f"{filename} (Baseline-corrected)",
+                            linewidth=1.2,
+                        )
+                    except Exception as e:
+                        print(
+                            f"Error processing baseline-corrected data for {filename}: {e}"
+                        )
+                        # Fall back to raw data
+                        pre_df = preprocess_data(df, normalize=self.show_normalized)
+                        self.ax.plot(
+                            pre_df["wavenumber"],
+                            pre_df["absorbance"],
+                            label=f"{filename} (Error - using raw)",
+                            linewidth=1.2,
+                            linestyle="-.",
+                            alpha=0.7,
+                        )
                 else:
                     # Fall back to raw data if no baseline available
-                    pre_df = preprocess_data(df, normalize=True)
+                    pre_df = preprocess_data(df, normalize=self.show_normalized)
                     self.ax.plot(
                         pre_df["wavenumber"],
                         pre_df["absorbance"],
@@ -1061,23 +1726,28 @@ class FTIRAnalyzer(QMainWindow):
                         linestyle="--",
                     )
             else:
-                # Show raw normalized data
-                pre_df = preprocess_data(df, normalize=True)
+                # Show raw data (normalized or absolute based on toggle)
+                pre_df = preprocess_data(df, normalize=self.show_normalized)
                 self.ax.plot(
                     pre_df["wavenumber"],
                     pre_df["absorbance"],
-                    label=filename,
+                    label=str(filename),
                     linewidth=1.2,
                 )
 
         # Set labels and title
         self.ax.set_xlabel("Wavenumber (cm⁻¹)")
+
+        # Set y-axis label based on data type
         if self.show_baseline_corrected:
-            self.ax.set_ylabel("Baseline-corrected Absorbance")
-            self.ax.set_title("FTIR Spectra (Baseline-corrected)")
+            ylabel = "Baseline-corrected Absorbance"
+            title_suffix = "Baseline-corrected"
         else:
-            self.ax.set_ylabel("Normalized Absorbance")
-            self.ax.set_title("FTIR Spectra (Raw)")
+            ylabel = "Normalized Absorbance" if self.show_normalized else "Absorbance"
+            title_suffix = "Normalized" if self.show_normalized else "Raw"
+
+        self.ax.set_ylabel(ylabel)
+        self.ax.set_title(f"FTIR Spectra ({title_suffix})")
 
         self.ax.grid(True, alpha=0.3)
 
@@ -1085,8 +1755,8 @@ class FTIRAnalyzer(QMainWindow):
         if self.reverse_x_axis:
             self.ax.invert_xaxis()
 
-        # Add legend if there are multiple spectra
-        if len(self.selected_data) > 1:
+        # Add legend if there are multiple visible spectra and legend is enabled
+        if visible_count > 1 and self.show_legend:
             self.ax.legend()
 
         # Update canvas
@@ -1097,11 +1767,12 @@ class FTIRAnalyzer(QMainWindow):
             QMessageBox.warning(self, "警告", "請選擇2-5筆資料進行相關性分析")
             return
 
-        # Normalize data for correlation analysis
-        normalized_data = [
-            preprocess_data(df, normalize=True) for df in self.selected_data
+        # Process data for correlation analysis using current normalization setting
+        processed_data = [
+            preprocess_data(df, normalize=self.show_normalized)
+            for df in self.selected_data
         ]
-        corr_matrix = calculate_correlation_matrix(normalized_data)
+        corr_matrix = calculate_correlation_matrix(processed_data)
         num = len(self.selected_data)
 
         # Set up OriginLab style
@@ -1143,6 +1814,12 @@ class FTIRAnalyzer(QMainWindow):
 
         # Format with OriginLab style
         format_originlab_plot(ax, "Correlation Matrix", "", "", show_minor_ticks=False)
+
+        # Hide legend for correlation matrix if legend toggle is disabled
+        if not self.show_legend:
+            legend = ax.get_legend()
+            if legend:
+                legend.set_visible(False)
 
         # 添加色條 with OriginLab styling
         cbar = plt.colorbar(im, ax=ax, shrink=0.8)

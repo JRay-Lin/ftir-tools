@@ -12,11 +12,24 @@ from pathlib import Path
 def install_pyinstaller():
     """Install PyInstaller if not already installed"""
     try:
-        import PyInstaller
+        # PyInstaller module check - this import may fail initially (expected)
+        import PyInstaller  # type: ignore
         print("PyInstaller is already installed")
     except ImportError:
         print("Installing PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+        # Try uv first, then fall back to pip
+        try:
+            subprocess.check_call(["uv", "add", "pyinstaller"])
+            print("Installed PyInstaller using uv")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+                print("Installed PyInstaller using pip")
+            except subprocess.CalledProcessError:
+                print("Failed to install PyInstaller. Please install it manually:")
+                print("  uv add pyinstaller")
+                print("  or: pip install pyinstaller")
+                sys.exit(1)
     
     # Also install pillow for icon conversion
     try:
@@ -24,7 +37,19 @@ def install_pyinstaller():
         print("Pillow is already installed")
     except ImportError:
         print("Installing Pillow for icon processing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow"])
+        # Try uv first, then fall back to pip
+        try:
+            subprocess.check_call(["uv", "add", "pillow"])
+            print("Installed Pillow using uv")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow"])
+                print("Installed Pillow using pip")
+            except subprocess.CalledProcessError:
+                print("Failed to install Pillow. Please install it manually:")
+                print("  uv add pillow")
+                print("  or: pip install pillow")
+                sys.exit(1)
 
 def convert_icon():
     """Convert PNG icon to ICO format for Windows"""
@@ -67,20 +92,20 @@ def create_spec_file(icon_path=None):
     """Create PyInstaller spec file with proper configuration"""
     icon_line = f"    icon='{icon_path}'," if icon_path else "    icon=None,  # Add icon path here if you have one"
     
-    spec_content = f'''
-# -*- mode: python ; coding: utf-8 -*-
+    spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
 import sys
+import os
 from pathlib import Path
 
 block_cipher = None
 
 # Get the absolute path to the project directory
-project_path = Path(__file__).parent.absolute()
+project_path = os.path.abspath('.')
 
 a = Analysis(
     ['main.py'],
-    pathex=[str(project_path)],
+    pathex=[project_path],
     binaries=[],
     datas=[
         ('modules', 'modules'),
@@ -109,7 +134,7 @@ a = Analysis(
         'datetime',
     ],
     hookspath=[],
-    hooksconfig={},
+    hooksconfig={{}},
     runtime_hooks=[],
     excludes=[
         'tkinter',
@@ -145,9 +170,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-{icon_line}
-)
-'''
+    {icon_line}
+)'''
     
     with open('ftir_tools.spec', 'w') as f:
         f.write(spec_content.strip())

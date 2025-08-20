@@ -27,6 +27,19 @@ def baseline_als(y, lam=1e5, p=0.01, niter=15):
     """
     y = np.array(y, dtype=float)
     L = len(y)
+    
+    # Input validation
+    if L < 3:
+        raise ValueError("Input data must have at least 3 points for ALS baseline correction")
+    
+    if not np.isfinite(y).all():
+        raise ValueError("Input data contains non-finite values (NaN or infinity)")
+    
+    if lam <= 0:
+        raise ValueError("Lambda parameter must be positive")
+        
+    if not (0 < p < 1):
+        raise ValueError("Asymmetry parameter p must be between 0 and 1")
 
     # Create difference matrix
     D = sparse.diags([1, -2, 1], [0, -1, -2], shape=(L, L - 2))

@@ -9,3 +9,8 @@ wheels/
 # Virtual environments
 .venv
 /files
+/build
+/dist
+CLAUDE.md
+
+ftir_tools.spec
