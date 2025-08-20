@@ -170,20 +170,21 @@ class BaselineCreationTab(QWidget):
 
         # Check if we clicked near an anchor point
         if self.anchors:
-            # Convert mouse coordinates to data coordinates
-            mouse_x, mouse_y = event.xdata, event.ydata
+            # Convert mouse coordinates to display coordinates
+            mouse_display_x, mouse_display_y = self.ax.transData.transform([event.xdata, event.ydata])
 
-            # Find the closest anchor within a certain radius
-            min_distance = float("inf")
+            # Find the closest anchor within a certain pixel radius
+            min_pixel_distance = float("inf")
             closest_anchor_idx = None
 
             for i, (anchor_x, anchor_y) in enumerate(self.anchors):
-                # Calculate distance in data coordinates
-                distance = (
-                    (mouse_x - anchor_x) ** 2 + (mouse_y - anchor_y) ** 2
-                ) ** 0.5
-                if distance < min_distance and distance < 50:  # 50 units threshold
-                    min_distance = distance
+                # Convert anchor coordinates to display coordinates
+                anchor_display_x, anchor_display_y = self.ax.transData.transform([anchor_x, anchor_y])
+                
+                # Calculate pixel distance
+                pixel_distance = ((mouse_display_x - anchor_display_x) ** 2 + (mouse_display_y - anchor_display_y) ** 2) ** 0.5
+                if pixel_distance < min_pixel_distance and pixel_distance < 10:  # 10 pixel threshold
+                    min_pixel_distance = pixel_distance
                     closest_anchor_idx = i
 
             if closest_anchor_idx is not None:
@@ -275,7 +276,7 @@ class BaselineCreationTab(QWidget):
                 # Highlight selected anchor
                 if i == self.selected_anchor:
                     color = "orange"
-                    size = 80
+                    size = 60  # Smaller selected anchor size
                     marker = "s"  # Square for selected anchors
 
                 self.ax.scatter(
@@ -289,6 +290,36 @@ class BaselineCreationTab(QWidget):
         else:
             self.view_toggle_btn.setText("Show Corrected Data")
         self.update_preview()
+
+    def _apply_anchor_adjustments(self, x_data, als_baseline):
+        """Apply anchor adjustments to ALS baseline with smooth transitions"""
+        adjusted_baseline = als_baseline.copy()
+        
+        if not self.anchors:
+            return adjusted_baseline
+        
+        # Calculate sigma based on data range / 50
+        data_range = np.max(x_data) - np.min(x_data)
+        sigma = data_range / 50.0  # Smaller influence area
+        
+        # For each anchor, apply a smooth adjustment
+        for anchor_x, anchor_y in self.anchors:
+            # Find the closest point in the data
+            closest_idx = np.argmin(np.abs(x_data - anchor_x))
+            closest_x = x_data[closest_idx]
+            
+            # Calculate the adjustment needed at this point
+            current_baseline_y = als_baseline[closest_idx]
+            adjustment = anchor_y - current_baseline_y
+            
+            # Apply smooth adjustment using a Gaussian-like function
+            distances = np.abs(x_data - closest_x)
+            weights = np.exp(-0.5 * (distances / sigma) ** 2)
+            
+            # Apply weighted adjustment
+            adjusted_baseline += adjustment * weights
+            
+        return adjusted_baseline
 
     def update_preview(self):
         """Update preview with current parameters (real-time)"""
@@ -306,77 +337,31 @@ class BaselineCreationTab(QWidget):
         try:
             from modules.baseline import baseline_als
 
-            # Always calculate ALS baseline as reference
+            # Calculate ALS baseline
             als_baseline = baseline_als(y_data, lam=lambda_val, p=p_val)
+            
+            # Apply anchor adjustments to ALS baseline
+            adjusted_baseline = self._apply_anchor_adjustments(x_data, als_baseline)
 
-            # If we have sufficient anchors, create a manual baseline
-            if self.anchors and len(self.anchors) > 1:
-                # Sort anchors by x-coordinate
-                sorted_anchors = sorted(self.anchors, key=lambda a: a[0])
-                anchor_x = [anchor[0] for anchor in sorted_anchors]
-                anchor_y = [anchor[1] for anchor in sorted_anchors]
-
-                # Interpolate baseline between anchors
-                try:
-                    from scipy.interpolate import interp1d
-
-                    baseline_func = interp1d(
-                        anchor_x, anchor_y, kind="linear", fill_value="extrapolate"
-                    )
-                    manual_baseline = baseline_func(x_data)
-
-                    if self.view_toggle_btn.isChecked():
-                        # Show corrected data with manual baseline
-                        manual_corrected = y_data - manual_baseline
-                        self.ax.plot(
-                            x_data,
-                            manual_corrected,
-                            "g-",
-                            label="Corrected (Manual)",
-                            linewidth=1.2,
-                        )
-                        self.ax.set_title(
-                            f'Manual Baseline-Corrected: {self.ylk_data.get("name", "Unknown")}'
-                        )
-                    else:
-                        # Show baseline view with both ALS and manual baselines
-                        self.ax.plot(
-                            x_data,
-                            y_data,
-                            "b-",
-                            label="Raw Data",
-                            linewidth=1.2,
-                            alpha=0.7,
-                        )
-                        # Show ALS baseline as reference (dashed)
-                        self.ax.plot(
-                            x_data,
-                            als_baseline,
-                            "r--",
-                            label="ALS Baseline (Reference)",
-                            linewidth=1.5,
-                            alpha=0.6,
-                        )
-                        # Show manual baseline (solid)
-                        self.ax.plot(
-                            x_data,
-                            manual_baseline,
-                            "r-",
-                            label="Manual Baseline",
-                            linewidth=2,
-                        )
-                        self.ax.set_title(
-                            f'Manual Baseline View: {self.ylk_data.get("name", "Unknown")}'
-                        )
-                except Exception:
-                    # Fallback to ALS if manual baseline calculation fails
-                    self._plot_with_als_baseline(
-                        x_data, y_data, lambda_val, p_val, als_baseline
-                    )
+            if self.view_toggle_btn.isChecked():
+                # Show corrected data
+                corrected_values = y_data - adjusted_baseline
+                self.ax.plot(
+                    x_data, corrected_values, "g-", label="Corrected", linewidth=1.2
+                )
+                self.ax.set_title(
+                    f'Baseline-Corrected: {self.ylk_data.get("name", "Unknown")}'
+                )
             else:
-                # Use ALS baseline when no anchors or insufficient anchors
-                self._plot_with_als_baseline(
-                    x_data, y_data, lambda_val, p_val, als_baseline
+                # Show baseline view (raw + baseline)
+                self.ax.plot(
+                    x_data, y_data, "b-", label="Raw Data", linewidth=1.2, alpha=0.7
+                )
+                self.ax.plot(
+                    x_data, adjusted_baseline, "r--", label="Baseline", linewidth=1.5
+                )
+                self.ax.set_title(
+                    f'Baseline View: {self.ylk_data.get("name", "Unknown")}'
                 )
 
         except Exception:
@@ -386,8 +371,9 @@ class BaselineCreationTab(QWidget):
                 f'Raw Data: {self.ylk_data.get("name", "Unknown")} (Baseline calc failed)'
             )
 
-        # Draw anchor points if any
-        self.draw_anchors()
+        # Draw anchor points if any (only in baseline view)
+        if not self.view_toggle_btn.isChecked():
+            self.draw_anchors()
 
         self.ax.set_xlabel("Wavenumber (cm⁻¹)")
         self.ax.set_ylabel("Absorbance")
@@ -449,39 +435,24 @@ class BaselineCreationTab(QWidget):
             return
 
         try:
-            # If we have anchors, use manual baseline
-            if self.anchors and len(self.anchors) > 1:
-                # Sort anchors by x-coordinate
-                sorted_anchors = sorted(self.anchors, key=lambda a: a[0])
-                anchor_x = [anchor[0] for anchor in sorted_anchors]
-                anchor_y = [anchor[1] for anchor in sorted_anchors]
+            # Calculate ALS baseline
+            from modules.baseline import baseline_als
+            als_baseline = baseline_als(y_data, lam=lambda_val, p=p_val)
+            
+            # Apply anchor adjustments to ALS baseline
+            baseline_values = self._apply_anchor_adjustments(x_data, als_baseline)
 
-                # Interpolate baseline between anchors
-                from scipy.interpolate import interp1d
-
-                baseline_func = interp1d(
-                    anchor_x, anchor_y, kind="linear", fill_value="extrapolate"
-                )
-                baseline_values = baseline_func(x_data)
-
-                # Save manual baseline parameters
-                baseline_params = {
-                    "method": "manual",
-                    "anchors": self.anchors,
-                }
-            else:
-                # Use ALS baseline when no anchors or insufficient anchors
-                from modules.baseline import baseline_als
-
-                baseline_values = baseline_als(y_data, lam=lambda_val, p=p_val)
-
-                # Save ALS parameters
-                baseline_params = {
-                    "method": "als",
-                    "lambda": lambda_val,
-                    "p": p_val,
-                    "smooth": smooth_val,
-                }
+            # Save baseline parameters (include both ALS and anchor data)
+            baseline_params = {
+                "method": "als_with_anchors" if self.anchors else "als",
+                "lambda": lambda_val,
+                "p": p_val,
+                "smooth": smooth_val,
+            }
+            
+            # Include anchor data if present
+            if self.anchors:
+                baseline_params["anchors"] = self.anchors
 
             # Update YLK data structure
             self.ylk_data["baseline"] = {
@@ -494,29 +465,32 @@ class BaselineCreationTab(QWidget):
                 self.ylk_data["metadata"] = {}
             self.ylk_data["metadata"]["baseline_params"] = baseline_params
 
-            # Find the original YLK file path and save
-            ylk_file_path = None
-            for file_path in self.parent_analyzer.files:
-                # 修改比對邏輯：忽略 .ylk 副檔名
-                if os.path.basename(file_path).replace(".ylk", "") == self.filename:
-                    ylk_file_path = file_path
-                    break
-
-            if ylk_file_path and save_ylk_file(ylk_file_path, self.ylk_data):
-                # 修改成功訊息：顯示完整檔案名稱
-                full_filename = os.path.basename(ylk_file_path)
-                QMessageBox.information(
-                    self, "Success", f"Baseline saved to {full_filename}"
-                )
-                # Update the parent's data
-                for i, file_path in enumerate(self.parent_analyzer.files):
-                    if file_path == ylk_file_path:
-                        self.parent_analyzer.ylk_data_list[i] = self.ylk_data
-                        break
-                # Automatically close the tab after saving
-                self.close_tab()
+            # Find the original YLK file path and save using the helper method
+            data_index = self.parent_analyzer._find_data_index_by_filename(self.filename)
+            if data_index is not None:
+                ylk_file_path = self.parent_analyzer.files[data_index]
+                
+                if save_ylk_file(ylk_file_path, self.ylk_data):
+                    full_filename = os.path.basename(ylk_file_path)
+                    QMessageBox.information(
+                        self, "Success", f"Baseline saved to {full_filename}"
+                    )
+                    # Update the parent's data
+                    self.parent_analyzer.ylk_data_list[data_index] = self.ylk_data
+                    
+                    # Update any selected data that corresponds to this file
+                    if self.filename in self.parent_analyzer.selected_files:
+                        selected_index = self.parent_analyzer.selected_files.index(self.filename)
+                        df = ylk_to_dataframe(self.ylk_data)
+                        if df is not None:
+                            self.parent_analyzer.selected_data[selected_index] = df
+                    
+                    # Automatically close the tab after saving
+                    self.close_tab()
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to save baseline")
             else:
-                QMessageBox.warning(self, "Error", "Failed to save baseline")
+                QMessageBox.warning(self, "Error", f"Could not find file {self.filename}")
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Baseline calculation failed: {str(e)}")
@@ -579,6 +553,13 @@ class FTIRAnalyzer(QMainWindow):
         # Recent folders submenu
         self.recent_menu = file_menu.addMenu("Open Recent")
         self.update_recent_menu()
+        
+        file_menu.addSeparator()
+        
+        # Export CSV action
+        export_csv_action = QAction("Export Current Graph as CSV", self)
+        export_csv_action.triggered.connect(self.export_current_graph_csv)
+        file_menu.addAction(export_csv_action)
 
         # Tools menu
         tools_menu = menubar.addMenu("Tools")
@@ -754,18 +735,15 @@ class FTIRAnalyzer(QMainWindow):
 
     def create_baseline_for_file(self, filename):
         """Create a new baseline tab for the specified file"""
-        # Find the YLK data for this file
-        ylk_data = None
-        for i, file_path in enumerate(self.files):
-            if os.path.basename(file_path).replace(".ylk", "") == filename:
-                ylk_data = self.ylk_data_list[i]
-                break
-
-        if ylk_data is None:
+        # Find the YLK data for this file using the helper method
+        data_index = self._find_data_index_by_filename(filename)
+        if data_index is None:
             QMessageBox.warning(
                 self, "Error", f"Could not find data for file {filename}"
             )
             return
+        
+        ylk_data = self.ylk_data_list[data_index]
 
         # Create baseline creation tab
         baseline_tab = BaselineCreationTab(ylk_data, filename, self)
@@ -812,21 +790,20 @@ class FTIRAnalyzer(QMainWindow):
                 self.selected_files.pop(file_index)
                 self.selected_data.pop(file_index)
 
-                # Add file back to All Files list
-                self.file_listbox.addItem(filename)
-
+        # Rebuild All Files list to maintain proper order
+        self._rebuild_all_files_list()
+        
         # Update main plot
         self.plot_spectra()
 
     def clear_selected(self):
         """Clear analysis list"""
-        # Add all selected files back to All Files list
-        for filename in self.selected_files:
-            self.file_listbox.addItem(filename)
-
         self.selected_listbox.clear()
         self.selected_files.clear()
         self.selected_data.clear()
+
+        # Rebuild All Files list to maintain proper order
+        self._rebuild_all_files_list()
 
         # Clear main plot
         self.ax.clear()
@@ -839,17 +816,19 @@ class FTIRAnalyzer(QMainWindow):
         """Handle double-click on file listbox to move file to selected"""
         filename = item.text()
         if filename not in self.selected_files:
-            index = self.file_listbox.row(item)
-            self.selected_files.append(filename)
-            # Convert YLK data to DataFrame for analysis
-            ylk_data = self.ylk_data_list[index]
-            df = ylk_to_dataframe(ylk_data)
-            if df is not None:
-                self.selected_data.append(df)
-                self.selected_listbox.addItem(filename)
-                # Hide from All Files list
-                self.file_listbox.takeItem(self.file_listbox.row(item))
-                self.plot_spectra()
+            # Find the correct index in the master data list
+            data_index = self._find_data_index_by_filename(filename)
+            if data_index is not None:
+                self.selected_files.append(filename)
+                # Convert YLK data to DataFrame for analysis
+                ylk_data = self.ylk_data_list[data_index]
+                df = ylk_to_dataframe(ylk_data)
+                if df is not None:
+                    self.selected_data.append(df)
+                    self.selected_listbox.addItem(filename)
+                    # Rebuild All Files list to hide selected files
+                    self._rebuild_all_files_list()
+                    self.plot_spectra()
 
     def on_selected_double_click(self, item):
         """Handle double-click on selected listbox to remove file from selected"""
@@ -860,9 +839,108 @@ class FTIRAnalyzer(QMainWindow):
             file_index = self.selected_files.index(filename)
             self.selected_files.pop(file_index)
             self.selected_data.pop(file_index)
-            # Add back to All Files list
-            self.file_listbox.addItem(filename)
+            # Rebuild All Files list to maintain proper order
+            self._rebuild_all_files_list()
             self.plot_spectra()
+
+    def _find_data_index_by_filename(self, filename):
+        """Find the index in ylk_data_list for a given display filename"""
+        for i, ylk_data in enumerate(self.ylk_data_list):
+            # Compare with the display name (without .ylk extension)
+            if ylk_data.get("name", "") == filename:
+                return i
+        return None
+
+    def _rebuild_all_files_list(self):
+        """Rebuild the All Files list in proper order, excluding selected files"""
+        self.file_listbox.clear()
+        for ylk_data in self.ylk_data_list:
+            display_name = ylk_data.get("name", "")
+            if display_name and display_name not in self.selected_files:
+                self.file_listbox.addItem(display_name)
+
+    def export_current_graph_csv(self):
+        """Export current graph data (raw and corrected) to CSV file"""
+        if not self.selected_data or not self.selected_files:
+            QMessageBox.information(
+                self, "No Data", "No files are currently selected for analysis."
+            )
+            return
+
+        # Get save file path
+        default_filename = "ftir_export.csv"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export CSV", 
+            default_filename, 
+            "CSV files (*.csv);;All files (*.*)"
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            import csv
+            import pandas as pd
+            
+            # Collect all data first
+            all_data = {}
+            
+            for filename, df in zip(self.selected_files, self.selected_data):
+                # Get raw data
+                wavenumber = df['wavenumber'].values
+                raw_absorbance = df['absorbance'].values
+                
+                # Calculate corrected data using baseline if available
+                data_index = self._find_data_index_by_filename(filename)
+                corrected_absorbance = raw_absorbance.copy()  # Default to raw
+                
+                if data_index is not None:
+                    ylk_data = self.ylk_data_list[data_index]
+                    baseline_data = ylk_data.get("baseline", {})
+                    
+                    if baseline_data.get("x") and baseline_data.get("y"):
+                        # Use saved baseline
+                        baseline_x = np.array(baseline_data["x"])
+                        baseline_y = np.array(baseline_data["y"])
+                        
+                        # Interpolate baseline to match raw data x-values if needed
+                        if len(baseline_x) != len(wavenumber) or not np.allclose(baseline_x, wavenumber):
+                            from scipy.interpolate import interp1d
+                            baseline_func = interp1d(baseline_x, baseline_y, kind='linear', fill_value='extrapolate')
+                            baseline_interpolated = baseline_func(wavenumber)
+                        else:
+                            baseline_interpolated = baseline_y
+                        
+                        corrected_absorbance = raw_absorbance - baseline_interpolated
+                
+                # Clean filename for column names
+                clean_filename = filename.replace(" ", "_").replace(".", "_").replace("-", "_")
+                
+                # Store data
+                all_data[f'wavenumber_{clean_filename}'] = wavenumber
+                all_data[f'{clean_filename}_raw'] = raw_absorbance
+                all_data[f'{clean_filename}_corrected'] = corrected_absorbance
+
+            # Create DataFrame and save
+            if all_data:
+                df_export = pd.DataFrame(all_data)
+                df_export.to_csv(file_path, index=False)
+                
+                QMessageBox.information(
+                    self, 
+                    "Export Complete", 
+                    f"Data exported successfully to:\n{file_path}\n\n"
+                    f"Exported {len(self.selected_files)} file(s).\n"
+                    f"Each file has wavenumber, raw, and corrected columns."
+                )
+            else:
+                QMessageBox.warning(self, "Export Error", "No data to export")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export CSV file:\n{str(e)}"
+            )
 
     def select_folder(self):
         folder_path = QFileDialog.getExistingDirectory(
