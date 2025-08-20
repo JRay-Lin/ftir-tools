@@ -89,13 +89,31 @@ class BaselineCreationTab(QWidget):
         params_group = QGroupBox("ALS Parameters")
         params_layout = QFormLayout(params_group)
 
-        self.lambda_edit = QLineEdit("1e5")
+        # Load existing baseline parameters as defaults if they exist
+        existing_params = self.ylk_data.get("metadata", {}).get("baseline_params", {})
+        
+        # Ensure lambda is positive and properly formatted
+        existing_lambda = existing_params.get("lambda", 1e5)
+        if existing_lambda <= 0:
+            existing_lambda = 1e5
+        default_lambda = f"{existing_lambda:g}"  # Use :g format to handle scientific notation properly
+        
+        # Ensure p is valid
+        existing_p = existing_params.get("p", 0.01) 
+        if existing_p <= 0 or existing_p >= 1:
+            existing_p = 0.01
+        default_p = str(existing_p)
+        
+        default_smooth = existing_params.get("smooth", False)
+
+        self.lambda_edit = QLineEdit(default_lambda)
         params_layout.addRow("Lambda (smoothness):", self.lambda_edit)
 
-        self.p_edit = QLineEdit("0.01")
+        self.p_edit = QLineEdit(default_p)
         params_layout.addRow("P (asymmetry):", self.p_edit)
 
         self.smooth_checkbox = QCheckBox("Apply smoothing")
+        self.smooth_checkbox.setChecked(default_smooth)
         params_layout.addRow("", self.smooth_checkbox)
 
         layout.addWidget(params_group)
@@ -128,6 +146,11 @@ class BaselineCreationTab(QWidget):
         self.anchors = []
         self.selected_anchor = None
         self.dragging = False
+
+        # Load existing anchor points if they exist
+        existing_anchors = existing_params.get("anchors", [])
+        if existing_anchors:
+            self.anchors = existing_anchors.copy()
 
         layout.addWidget(plot_group)
 
@@ -776,6 +799,11 @@ class FTIRAnalyzer(QMainWindow):
         export_csv_action = QAction("Export Current Graph as CSV", self)
         export_csv_action.triggered.connect(self.export_current_graph_csv)
         file_menu.addAction(export_csv_action)
+
+        # Export PNG action
+        export_png_action = QAction("Export Current Graph as PNG", self)
+        export_png_action.triggered.connect(self.export_current_graph_png)
+        file_menu.addAction(export_png_action)
 
         # Tools menu
         tools_menu = menubar.addMenu("Tools")
@@ -1440,6 +1468,43 @@ class FTIRAnalyzer(QMainWindow):
                 self, "Export Error", f"Failed to export CSV file:\n{str(e)}"
             )
 
+    def export_current_graph_png(self):
+        """Export current graph as PNG file"""
+        if not self.selected_data or not self.selected_files:
+            QMessageBox.information(
+                self, "No Data", "No files are currently selected for analysis."
+            )
+            return
+
+        # Get save file path
+        default_filename = "ftir_graph.png"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export PNG", default_filename, "PNG files (*.png);;All files (*.*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Save the current figure
+            self.figure.savefig(
+                file_path,
+                dpi=300,
+                bbox_inches="tight",
+                facecolor="white",
+                edgecolor="none",
+                format="png",
+            )
+
+            QMessageBox.information(
+                self, "Export Complete", f"Graph exported successfully to:\n{file_path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Export Error", f"Failed to export PNG file:\n{str(e)}"
+            )
+
     def select_folder(self):
         folder_path = QFileDialog.getExistingDirectory(
             self, "Select folder with .jws files"
@@ -1506,9 +1571,9 @@ class FTIRAnalyzer(QMainWindow):
             # Update tree widget
             self._rebuild_file_tree()
 
-            QMessageBox.information(
-                self, "Complete", f"Added folder with {len(processed_files)} files"
-            )
+            # QMessageBox.information(
+            #     self, "Complete", f"Added folder with {len(processed_files)} files"
+            # )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error processing folder: {str(e)}")
