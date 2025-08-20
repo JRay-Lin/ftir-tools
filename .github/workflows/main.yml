@@ -29,10 +29,10 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies with uv
-        run: uv sync  # Assumes pyproject.toml is used; if using requirements.txt, change to uv pip install -r requirements.txt
+        run: uv sync  # Assuming pyproject.toml is used; if requirements.txt, change to uv pip install -r requirements.txt
 
       - name: Install PyInstaller and Pillow (for icon conversion)
-        run: uv pip install pyinstaller pillow  # Installs PyInstaller and Pillow if not in pyproject.toml
+        run: uv pip install pyinstaller pillow  # If not in pyproject.toml, install additionally
 
       - name: Convert icon for Windows
         if: matrix.os == 'windows-latest'
@@ -60,19 +60,22 @@ jobs:
           iconutil -c icns icon/icon.iconset -o icon/icon.icns
           rm -rf icon/icon.iconset
 
-      - name: Build executable
+      - name: Build executable for Windows
+        if: matrix.os == 'windows-latest'
         run: |
-          APP_NAME="MyApp-v${{ inputs.version }}"
-          if [ "${{ matrix.os }}" == "windows-latest" ]; then
-            uv run pyinstaller --onefile --icon=icon/icon.ico --name $APP_NAME main.py
-          else
-            uv run pyinstaller --onefile --icon=icon/icon.icns --name $APP_NAME --windowed main.py
-            # For .app bundle, adjust icon in Info.plist
-            if [ -d "dist/$APP_NAME.app" ]; then
-              cp icon/icon.icns "dist/$APP_NAME.app/Contents/Resources/"
-              plutil -replace CFBundleIconFile -string icon.icns "dist/$APP_NAME.app/Contents/Info.plist"
-            fi
+          uv run pyinstaller --onefile --icon=icon/icon.ico --name MyApp-v${{ inputs.version }} main.py
+        shell: pwsh
+
+      - name: Build executable for macOS
+        if: matrix.os == 'macos-14'
+        run: |
+          uv run pyinstaller --onefile --icon=icon/icon.icns --name MyApp-v${{ inputs.version }} --windowed main.py
+          # If needed for .app bundle, additionally handle Info.plist
+          if [ -d "dist/MyApp-v${{ inputs.version }}.app" ]; then
+            cp icon/icon.icns "dist/MyApp-v${{ inputs.version }}.app/Contents/Resources/"
+            plutil -replace CFBundleIconFile -string icon.icns "dist/MyApp-v${{ inputs.version }}.app/Contents/Info.plist"
           fi
+        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
