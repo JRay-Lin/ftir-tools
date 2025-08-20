@@ -55,8 +55,8 @@ jobs:
 
             - name: Build executable for Windows
               run: |
-                  VERSION=${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}
-                  uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v${VERSION}" main.py
+                  $env:VERSION = "${{ github.event_name == 'workflow_dispatch' && (inputs.version || '1.0.0') || format('1.0.{0}', github.run_number) }}"
+                  uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v$env:VERSION" main.py
               shell: pwsh
 
             - name: Upload artifact
