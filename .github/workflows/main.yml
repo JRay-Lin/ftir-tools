@@ -17,6 +17,8 @@ permissions:
 jobs:
     build-windows:
         runs-on: windows-latest
+        outputs:
+            version: ${{ steps.version.outputs.version }}
 
         steps:
             - name: Checkout code
@@ -78,6 +80,8 @@ jobs:
 
     build-macos:
         runs-on: macos-14 # Supports Apple Silicon (ARM64)
+        outputs:
+            version: ${{ steps.version.outputs.version }}
 
         steps:
             - name: Checkout code
@@ -166,31 +170,22 @@ jobs:
             - name: Download Windows artifact
               uses: actions/download-artifact@v4
               with:
-                  name: executable-windows-latest-v${{ steps.version.outputs.version }}
+                  name: executable-windows-latest-v${{ needs.build-windows.outputs.version }}
                   path: dist/windows
 
             - name: Download macOS artifact
               uses: actions/download-artifact@v4
               with:
-                  name: executable-macos-14-v${{ steps.version.outputs.version }}
+                  name: executable-macos-14-v${{ needs.build-macos.outputs.version }}
                   path: dist/macos
-
-            - name: Set version
-              id: version
-              run: |
-                  if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-                      echo "version=${{ inputs.version || '1.0.0' }}" >> $GITHUB_OUTPUT
-                  else
-                      echo "version=1.0.${{ github.run_number }}" >> $GITHUB_OUTPUT
-                  fi
 
             - name: Create Release
               uses: softprops/action-gh-release@v2
               with:
-                  tag_name: v${{ steps.version.outputs.version }}
-                  name: Release v${{ steps.version.outputs.version }}
+                  tag_name: v${{ needs.build-windows.outputs.version }}
+                  name: Release v${{ needs.build-windows.outputs.version }}
                   draft: false
                   prerelease: false
                   files: |
-                      dist/windows/FTIR Tools-v${{ steps.version.outputs.version }}.exe
-                      dist/macos/FTIR Tools-v${{ steps.version.outputs.version }}.app.zip
+                      dist/windows/FTIR Tools-v${{ needs.build-windows.outputs.version }}.exe
+                      dist/macos/FTIR Tools-v${{ needs.build-macos.outputs.version }}.app.zip
