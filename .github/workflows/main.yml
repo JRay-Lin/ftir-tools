@@ -139,7 +139,7 @@ jobs:
                   # Try to read version from pyproject.toml first
                   pyproject_version=""
                   if [ -f "pyproject.toml" ]; then
-                      pyproject_version=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+                      pyproject_version=$(grep -E '^version\s*=' pyproject.toml | grep -oE '"[^"]*"' | tr -d '"')
                       if [ -n "$pyproject_version" ]; then
                           echo "Found version in pyproject.toml: $pyproject_version"
                       fi
