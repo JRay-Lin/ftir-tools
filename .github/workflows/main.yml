@@ -137,6 +137,7 @@ jobs:
               id: version
               run: |
                   # Try to read version from pyproject.toml first
+                  pyproject_version=""
                   if [ -f "pyproject.toml" ]; then
                       pyproject_version=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
                       if [ -n "$pyproject_version" ]; then
