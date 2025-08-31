@@ -69,7 +69,7 @@ jobs:
 
             - name: Build executable for Windows
               run: |
-                  uv run pyinstaller --onefile --icon=icon/icon.ico --name "FTIR Tools-v${{ steps.version.outputs.version }}" main.py
+                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.ico --name "FTIR Tools-v${{ steps.version.outputs.version }}" main.py
               shell: pwsh
 
             - name: Upload artifact
@@ -139,7 +139,7 @@ jobs:
 
             - name: Build executable for macOS
               run: |
-                  uv run pyinstaller --onefile --icon=icon/icon.icns --name "FTIR Tools-v${{ steps.version.outputs.version }}" --windowed main.py
+                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.icns --name "FTIR Tools-v${{ steps.version.outputs.version }}" --windowed main.py
                   # If needed for .app bundle, additionally handle Info.plist
                   if [ -d "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app" ]; then
                     cp icon/icon.icns "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app/Contents/Resources/"
