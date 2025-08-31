@@ -49,11 +49,35 @@ jobs:
             - name: Set version
               id: version
               run: |
+                  # Try to read version from pyproject.toml first
+                  try {
+                      $pyprojectContent = Get-Content "pyproject.toml" -Raw
+                      if ($pyprojectContent -match 'version\s*=\s*"([^"]+)"') {
+                          $pyprojectVersion = $matches[1]
+                          Write-Host "Found version in pyproject.toml: $pyprojectVersion"
+                      } else {
+                          $pyprojectVersion = $null
+                      }
+                  } catch {
+                      Write-Host "Could not read pyproject.toml"
+                      $pyprojectVersion = $null
+                  }
+
                   if ("${{ github.event_name }}" -eq "workflow_dispatch") {
                       $version = "${{ inputs.version }}" 
-                      if ([string]::IsNullOrEmpty($version)) { $version = "1.0.0" }
+                      if ([string]::IsNullOrEmpty($version)) { 
+                          if ($pyprojectVersion) {
+                              $version = $pyprojectVersion
+                          } else {
+                              $version = "1.0.0"
+                          }
+                      }
                   } else {
-                      $version = "1.0.${{ github.run_number }}"
+                      if ($pyprojectVersion) {
+                          $version = "$pyprojectVersion-build${{ github.run_number }}"
+                      } else {
+                          $version = "1.0.${{ github.run_number }}"
+                      }
                   }
                   echo "version=$version" >> $env:GITHUB_OUTPUT
               shell: pwsh
@@ -69,7 +93,7 @@ jobs:
 
             - name: Build executable for Windows
               run: |
-                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.ico --name "FTIR Tools-v${{ steps.version.outputs.version }}" main.py
+                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.ico --name "FTIR Tools" --exclude-module docs --exclude docs main.py
               shell: pwsh
 
             - name: Upload artifact
@@ -112,11 +136,29 @@ jobs:
             - name: Set version
               id: version
               run: |
+                  # Try to read version from pyproject.toml first
+                  if [ -f "pyproject.toml" ]; then
+                      pyproject_version=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/^version\s*=\s*"([^"]+)".*/\1/')
+                      if [ -n "$pyproject_version" ]; then
+                          echo "Found version in pyproject.toml: $pyproject_version"
+                      fi
+                  fi
+
                   if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
                       version="${{ inputs.version }}"
-                      if [ -z "$version" ]; then version="1.0.0"; fi
+                      if [ -z "$version" ]; then 
+                          if [ -n "$pyproject_version" ]; then
+                              version="$pyproject_version"
+                          else
+                              version="1.0.0"
+                          fi
+                      fi
                   else
-                      version="1.0.${{ github.run_number }}"
+                      if [ -n "$pyproject_version" ]; then
+                          version="$pyproject_version-build${{ github.run_number }}"
+                      else
+                          version="1.0.${{ github.run_number }}"
+                      fi
                   fi
                   echo "version=$version" >> $GITHUB_OUTPUT
 
@@ -139,18 +181,18 @@ jobs:
 
             - name: Build executable for macOS
               run: |
-                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.icns --name "FTIR Tools-v${{ steps.version.outputs.version }}" --windowed main.py
+                  uv run pyinstaller --noconsole --onefile --icon=icon/icon.icns --name "FTIR Tools" --windowed --exclude-module docs --exclude docs main.py
                   # If needed for .app bundle, additionally handle Info.plist
-                  if [ -d "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app" ]; then
-                    cp icon/icon.icns "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app/Contents/Resources/"
-                    plutil -replace CFBundleIconFile -string icon.icns "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app/Contents/Info.plist"
+                  if [ -d "dist/FTIR Tools.app" ]; then
+                    cp icon/icon.icns "dist/FTIR Tools.app/Contents/Resources/"
+                    plutil -replace CFBundleIconFile -string icon.icns "dist/FTIR Tools.app/Contents/Info.plist"
                   fi
               shell: bash
 
             - name: Zip macOS .app bundle
               run: |
-                  if [ -d "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app" ]; then
-                    zip -r "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app.zip" "dist/FTIR Tools-v${{ steps.version.outputs.version }}.app"
+                  if [ -d "dist/FTIR Tools.app" ]; then
+                    zip -r "dist/FTIR Tools.app.zip" "dist/FTIR Tools.app"
                   fi
               shell: bash
 
@@ -187,5 +229,5 @@ jobs:
                   draft: false
                   prerelease: false
                   files: |
-                      dist/windows/FTIR Tools-v${{ needs.build-windows.outputs.version }}.exe
-                      dist/macos/FTIR Tools-v${{ needs.build-macos.outputs.version }}.app.zip
+                      dist/windows/FTIR Tools.exe
+                      dist/macos/FTIR Tools.app.zip

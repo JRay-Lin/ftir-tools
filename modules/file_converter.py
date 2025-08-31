@@ -6,9 +6,7 @@ and managing YLK data structures.
 """
 
 import os
-import subprocess
 import pandas as pd
-import numpy as np
 import olefile
 import struct
 import json
@@ -84,11 +82,11 @@ def _unpack_ole_jws_header(data):
 def convert_jws_to_ylk_direct(jws_filename, ylk_filename):
     """
     Direct JWS file to YLK conversion (without depending on jws2txt)
-    
+
     Parameters:
     jws_filename: path to input .jws file
     ylk_filename: path to output .ylk file
-    
+
     Returns:
     bool: True if successful, False otherwise
     """
@@ -116,40 +114,34 @@ def convert_jws_to_ylk_direct(jws_filename, ylk_filename):
         # Prepare data arrays
         x_data = []
         y_data = []
-        
+
         for line_no in range(header_obj.point_number):
             x_value = header_obj.x_for_first_point + line_no * header_obj.x_increment
             y_value = chunks[0][line_no] if chunks else 0
             x_data.append(round(float(x_value), 6))
             y_data.append(round(float(y_value), 8))
-        
+
         # Calculate range and round to nearest 10x
         x_min_raw, x_max_raw = min(x_data), max(x_data)
-        
+
         # Round to nearest 10x (e.g., 1999.8 -> 2000, 2038 -> 2040)
         x_min = round(x_min_raw / 10) * 10
         x_max = round(x_max_raw / 10) * 10
-        
+
         # Create YLK structure
         ylk_data = {
             "name": os.path.basename(jws_filename).replace(".jws", ""),
             "range": [x_min, x_max],
-            "raw_data": {
-                "x": x_data,
-                "y": y_data
-            },
-            "baseline": {
-                "x": [],
-                "y": []
-            },
+            "raw_data": {"x": x_data, "y": y_data},
+            "baseline": {"x": [], "y": []},
             "metadata": {
                 "created": datetime.now().isoformat(),
                 "source_file": os.path.basename(jws_filename),
                 "channels": header_obj.channel_number,
-                "points": header_obj.point_number
-            }
+                "points": header_obj.point_number,
+            },
         }
-        
+
         # Write YLK file
         with open(ylk_filename, "w", encoding="utf-8") as f:
             json.dump(ylk_data, f, indent=2, ensure_ascii=False)
@@ -164,11 +156,11 @@ def convert_jws_to_ylk_direct(jws_filename, ylk_filename):
 def convert_jws_with_fallback(jws_file, output_dir):
     """
     Convert JWS file to YLK format using direct conversion
-    
+
     Parameters:
     jws_file: path to input .jws file
     output_dir: output directory for YLK file
-    
+
     Returns:
     str: path to converted YLK file, or None if failed
     """
@@ -186,10 +178,10 @@ def convert_jws_with_fallback(jws_file, output_dir):
 def load_ylk_file(ylk_filename):
     """
     Load YLK file and return data structure
-    
+
     Parameters:
     ylk_filename: path to YLK file
-    
+
     Returns:
     dict: YLK data structure, or None if failed
     """
@@ -205,11 +197,11 @@ def load_ylk_file(ylk_filename):
 def save_ylk_file(ylk_filename, data):
     """
     Save data structure to YLK file
-    
+
     Parameters:
     ylk_filename: path to YLK file
     data: YLK data structure to save
-    
+
     Returns:
     bool: True if successful, False otherwise
     """
@@ -218,7 +210,7 @@ def save_ylk_file(ylk_filename, data):
         if "metadata" not in data:
             data["metadata"] = {}
         data["metadata"]["modified"] = datetime.now().isoformat()
-        
+
         with open(ylk_filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return True
@@ -230,10 +222,10 @@ def save_ylk_file(ylk_filename, data):
 def ylk_to_dataframe(ylk_data):
     """
     Convert YLK data to pandas DataFrame for analysis
-    
+
     Parameters:
     ylk_data: YLK data structure
-    
+
     Returns:
     pd.DataFrame: DataFrame with wavenumber and absorbance columns
     """
@@ -241,11 +233,8 @@ def ylk_to_dataframe(ylk_data):
         raw_data = ylk_data.get("raw_data", {})
         x_data = raw_data.get("x", [])
         y_data = raw_data.get("y", [])
-        
-        df = pd.DataFrame({
-            "wavenumber": x_data,
-            "absorbance": y_data
-        })
+
+        df = pd.DataFrame({"wavenumber": x_data, "absorbance": y_data})
         return df
     except Exception as e:
         print(f"Unable to convert YLK to DataFrame: {str(e)}")
@@ -255,11 +244,11 @@ def ylk_to_dataframe(ylk_data):
 def get_supported_formats():
     """
     Get list of supported file formats
-    
+
     Returns:
     dict: format descriptions and extensions
     """
     return {
         "jws": "JASCO JWS files (binary format)",
-        "ylk": "YLK data files (JSON format with baseline)"
+        "ylk": "YLK data files (JSON format with baseline)",
     }
